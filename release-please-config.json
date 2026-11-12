@@ -1,0 +1,16 @@
+{
+  "plugins": ["cargo-workspace"],
+  "packages": {
+    ".": {
+      "release-type": "ruby",
+      "package-name": "suspect_machines",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true
+    },
+    "ext/suspect_machines_native/core": {
+      "release-type": "rust",
+      "package-name": "suspect-machines",
+      "bump-minor-pre-major": true
+    }
+  }
+}

@@ -1,0 +1,52 @@
+module SuspectMachines
+  VERSION: String
+
+  type refusal = :time_regression | :duplicate | :stale | :full | :untracked
+
+  class Statistics
+    attr_reader samples: Integer
+    attr_reader mean_ns: Float
+    attr_reader std_dev_ns: Float
+    attr_reader min_ns: Integer
+    attr_reader max_ns: Integer
+    def self.new: (Integer samples, Float mean_ns, Float std_dev_ns, Integer min_ns, Integer max_ns) -> Statistics
+                | (samples: Integer, mean_ns: Float, std_dev_ns: Float, min_ns: Integer, max_ns: Integer) -> Statistics
+  end
+
+  class Suspect
+    attr_reader peer: Integer
+    attr_reader incarnation: Integer
+    attr_reader phi: Float
+    def self.new: (Integer peer, Integer incarnation, Float phi) -> Suspect
+                | (peer: Integer, incarnation: Integer, phi: Float) -> Suspect
+  end
+
+  class Scan
+    attr_reader suspects: Array[Suspect]
+    attr_reader next_cursor: Integer?
+    def self.new: (Array[Suspect] suspects, Integer? next_cursor) -> Scan
+                | (suspects: Array[Suspect], next_cursor: Integer?) -> Scan
+  end
+
+  class Roster
+    CAPACITY: Integer
+    WINDOW: Integer
+
+    def self.new: (distribution: :normal | :exponential, min_samples: Integer, ?min_std_dev_ns: Integer?, ?acceptable_pause_ns: Integer) -> Roster
+    def capacity: () -> Integer
+    def window: () -> Integer
+    def size: () -> Integer
+    def heartbeat: (Integer peer, Integer incarnation, Integer now_ns) -> (:first | :recorded | :restarted | refusal)
+    def suspicion: (Integer peer, Integer now_ns) -> (Float | :warming_up | refusal)
+    def suspects: (Integer now_ns, Float | Integer threshold, ?cursor: Integer, ?limit: Integer) -> Scan
+    def statistics: (Integer peer) -> Statistics?
+    def incarnation: (Integer peer) -> Integer?
+    def last_heartbeat_ns: (Integer peer) -> Integer?
+    def forget: (Integer peer) -> bool
+
+    private
+
+    def self._new: (Symbol, Integer, Integer, Integer) -> Roster
+    def _suspects: (Integer, Float | Integer, Integer, Integer) -> Scan
+  end
+end
