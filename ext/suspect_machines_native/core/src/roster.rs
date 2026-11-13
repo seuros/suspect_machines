@@ -15,6 +15,9 @@ struct Slot<const W: usize> {
 }
 
 /// A peer whose phi has reached the scan threshold.
+///
+/// `Suspect::default()` is a placeholder for pre-filling a scan buffer; the
+/// roster never emits it.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Suspect {
     /// Caller-assigned peer identifier.
