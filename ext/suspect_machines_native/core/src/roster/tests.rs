@@ -20,14 +20,14 @@ fn roster_tracks_incarnations_capacity_and_forgetting() {
     assert_eq!(roster.heartbeat(7, 2, at(20)), Err(Refusal::Stale));
     assert_eq!(roster.heartbeat(7, 3, at(9)), Err(Refusal::TimeRegression));
     assert_eq!(roster.heartbeat(7, 4, at(9)), Err(Refusal::TimeRegression));
-    assert_eq!(roster.heartbeat(7, 3, at(10)), Err(Refusal::Duplicate));
+    assert_eq!(roster.heartbeat(7, 3, at(10)), Err(Refusal::SameInstant));
     assert_eq!(
         roster.heartbeat(7, 3, Duration::MAX),
         Err(Refusal::Overflow)
     );
     assert_eq!(roster.suspicion(7, Duration::MAX), Err(Refusal::Overflow));
     assert_eq!(roster.suspicion(7, at(9)), Err(Refusal::TimeRegression));
-    assert!(!roster.forget(9));
+    assert_eq!(roster.forget(9), Forgetting::NotTracked);
     assert_eq!(roster, full);
 
     assert!(matches!(
@@ -51,8 +51,10 @@ fn roster_tracks_incarnations_capacity_and_forgetting() {
     ));
     assert_eq!(roster.heartbeat(7, 3, at(40)), Err(Refusal::Stale));
 
-    assert!(roster.forget(7));
-    assert!(!roster.forget(7));
+    assert_eq!(roster.forget(7), Forgetting::Forgotten);
+    let forgotten = roster.clone();
+    assert_eq!(roster.forget(7), Forgetting::NotTracked);
+    assert_eq!(roster, forgotten);
     assert_eq!(roster.len(), 1);
     assert_eq!(roster.incarnation(7), None);
     assert_eq!(roster.statistics(7), None);
@@ -173,7 +175,8 @@ fn roster_matches_naive_model_on_random_schedules() {
             let peer = rng.below(9);
             let known = model.iter().position(|entry| entry.0 == peer);
             if rng.below(40) == 0 {
-                assert_eq!(roster.forget(peer), known.is_some());
+                let forgotten = roster.forget(peer) == Forgetting::Forgotten;
+                assert_eq!(forgotten, known.is_some());
                 if let Some(index) = known {
                     model.remove(index);
                 }

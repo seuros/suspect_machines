@@ -136,7 +136,10 @@ fn refused_heartbeats_and_reads_do_not_mutate() {
     assert!(detector.heartbeat(at(10 * SECOND)).is_ok());
     assert!(detector.heartbeat(at(11 * SECOND)).is_ok());
     let before = detector.clone();
-    assert_eq!(detector.heartbeat(at(11 * SECOND)), Err(Refusal::Duplicate));
+    assert_eq!(
+        detector.heartbeat(at(11 * SECOND)),
+        Err(Refusal::SameInstant)
+    );
     assert_eq!(
         detector.heartbeat(at(11 * SECOND - 1)),
         Err(Refusal::TimeRegression)
@@ -218,7 +221,7 @@ fn u64_limits_stay_finite_and_exact() {
             samples: 2,
         })
     );
-    assert_eq!(detector.heartbeat(at(u64::MAX)), Err(Refusal::Duplicate));
+    assert_eq!(detector.heartbeat(at(u64::MAX)), Err(Refusal::SameInstant));
     let statistics = detector.statistics().unwrap_or_else(|| panic!("no data"));
     assert_eq!(statistics.max, at(u64::MAX - 1));
     assert_eq!(statistics.min, at(1));

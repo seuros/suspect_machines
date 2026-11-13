@@ -14,13 +14,12 @@ mod window;
 use core::time::Duration;
 
 pub use detector::Detector;
-pub use roster::{Roster, Scan, Suspect};
+pub use roster::{Forgetting, Roster, Scan, Suspect};
 
 /// The distribution the detector assumes heartbeat intervals follow. This is
 /// an assumption the caller makes about its network, not something the
 /// detector verifies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Distribution {
     /// Intervals are normally distributed around the window mean, as in
     /// Hayashibara et al. The window's population standard deviation is
@@ -37,7 +36,6 @@ pub enum Distribution {
 
 /// Why a configuration was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum ConfigError {
     /// A warm-up of zero intervals would report phi from no data.
     ZeroWarmUp,
@@ -156,13 +154,12 @@ impl Config {
 
 /// Why a call was refused. A refused call changes nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Refusal {
     /// `now` is earlier than the last recorded heartbeat.
     TimeRegression,
     /// `now` equals the last recorded heartbeat: a zero interval carries no
     /// timing information and is not recorded.
-    Duplicate,
+    SameInstant,
     /// `now` does not fit in `u64` nanoseconds.
     Overflow,
     /// The heartbeat carries an incarnation older than the tracked one.
@@ -173,9 +170,23 @@ pub enum Refusal {
     Untracked,
 }
 
+impl core::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::TimeRegression => "the instant precedes the last recorded heartbeat",
+            Self::SameInstant => "the instant equals the last recorded heartbeat",
+            Self::Overflow => "the instant does not fit in 64-bit nanoseconds",
+            Self::Stale => "the incarnation is older than the tracked one",
+            Self::Full => "every roster slot tracks another peer",
+            Self::Untracked => "the roster does not track this peer",
+        })
+    }
+}
+
+impl core::error::Error for Refusal {}
+
 /// What an accepted heartbeat did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Beat {
     /// First heartbeat: a reference point, no interval yet.
     First,
@@ -250,7 +261,6 @@ impl Threshold {
 
 /// What the detector can say about a peer at a given instant.
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[non_exhaustive]
 pub enum Suspicion {
     /// No heartbeat has ever been recorded.
     NoHeartbeat,

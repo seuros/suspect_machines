@@ -123,7 +123,7 @@ impl Model {
             return Err(Refusal::TimeRegression);
         }
         if now == last {
-            return Err(Refusal::Duplicate);
+            return Err(Refusal::SameInstant);
         }
         self.intervals.push(now - last);
         if self.intervals.len() > window {

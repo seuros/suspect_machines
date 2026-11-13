@@ -39,7 +39,7 @@ impl<const W: usize> Detector<W> {
     /// # Errors
     ///
     /// [`Refusal::Overflow`], [`Refusal::TimeRegression`] or
-    /// [`Refusal::Duplicate`]; the detector is unchanged.
+    /// [`Refusal::SameInstant`]; the detector is unchanged.
     pub fn heartbeat(&mut self, now: Duration) -> Result<Beat, Refusal> {
         self.window.observe(nanos(now).ok_or(Refusal::Overflow)?)
     }

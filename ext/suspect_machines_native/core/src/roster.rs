@@ -38,6 +38,15 @@ pub struct Scan {
     pub next: Option<usize>,
 }
 
+/// What an honoured [`Roster::forget`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Forgetting {
+    /// The peer was tracked; its slot is now free.
+    Forgotten,
+    /// The peer was not tracked: an idempotent repeat that changed nothing.
+    NotTracked,
+}
+
 /// Up to `P` peers, each with a window of `W` intervals, sharing one policy.
 ///
 /// Peers are identified by a caller-assigned `u64` and an incarnation number
@@ -80,7 +89,7 @@ impl<const P: usize, const W: usize> Roster<P, W> {
     /// # Errors
     ///
     /// [`Refusal::Overflow`], [`Refusal::Stale`] for an older incarnation,
-    /// [`Refusal::TimeRegression`], [`Refusal::Duplicate`], or
+    /// [`Refusal::TimeRegression`], [`Refusal::SameInstant`], or
     /// [`Refusal::Full`] when an unknown peer finds no free slot. The roster
     /// is unchanged.
     pub fn heartbeat(
@@ -204,15 +213,21 @@ impl<const P: usize, const W: usize> Roster<P, W> {
         self.find(peer)?.window.last().map(Duration::from_nanos)
     }
 
-    /// Stops tracking `peer` and frees its slot. Returns whether it was
-    /// tracked. A later heartbeat from the same peer starts from nothing, at
-    /// any incarnation: the roster keeps no tombstones.
-    pub fn forget(&mut self, peer: u64) -> bool {
+    /// Stops tracking `peer` and frees its slot. A later heartbeat from the
+    /// same peer starts from nothing, at any incarnation: the roster keeps no
+    /// tombstones.
+    ///
+    /// Never refuses. [`Forgetting::NotTracked`] is an idempotent repeat: the
+    /// peer was already absent and nothing changed.
+    pub fn forget(&mut self, peer: u64) -> Forgetting {
         let tracked = self
             .slots
             .iter_mut()
             .find(|slot| slot.as_ref().is_some_and(|slot| slot.peer == peer));
-        tracked.is_some_and(|slot| slot.take().is_some())
+        tracked.map_or(Forgetting::NotTracked, |slot| {
+            *slot = None;
+            Forgetting::Forgotten
+        })
     }
 
     /// Peers currently tracked.

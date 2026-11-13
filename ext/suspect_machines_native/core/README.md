@@ -25,13 +25,20 @@ Everything the detector assumes is stated by the caller:
 
 Time is explicit: the caller passes a monotonic `Duration` to every call. A
 heartbeat earlier than the previous one is `Refusal::TimeRegression`, an equal
-one is `Refusal::Duplicate`, a time beyond `u64` nanoseconds is
+one is `Refusal::SameInstant`, a time beyond `u64` nanoseconds is
 `Refusal::Overflow`. A refused call changes nothing. A full window drops its
 oldest interval; a full roster answers `Refusal::Full` and never evicts a peer.
 A heartbeat with an older incarnation is `Refusal::Stale`; a newer one discards
 the peer's statistics and starts a new warm-up. `Roster::scan` writes peers at
 or above a threshold into a caller buffer and returns a cursor when it runs out
-of room.
+of room. `Roster::forget` never refuses: it answers `Forgetting::Forgotten`, or
+`Forgetting::NotTracked` for the idempotent repeat that changed nothing.
+
+The Ruby gem passes and answers every `Duration` as Integer nanoseconds and
+mirrors `Distribution::Normal`, `Config`, `Beat::Recorded`,
+`Suspicion::WarmingUp`, `Suspicion::Measured`, `Statistics`, `Suspect` and
+`Scan` as `Data` values with the same fields (its `Scan` carries the suspects
+where this one counts `written`). Unit variants are symbols.
 
 Phi is advisory. It describes arrival statistics under an assumed
 distribution. It is not a verdict that a peer is dead, it does not revoke a

@@ -74,7 +74,7 @@ impl<const W: usize> Window<W> {
             return Err(Refusal::TimeRegression);
         }
         if now == last {
-            return Err(Refusal::Duplicate);
+            return Err(Refusal::SameInstant);
         }
         let interval = now - last;
         if let Some(slot) = self.intervals.get_mut(self.next) {
@@ -131,7 +131,7 @@ impl<const W: usize> Window<W> {
             Some(statistics) if self.len >= config.min_samples() => {
                 Ok(Suspicion::Measured(config.phi(&statistics, silence)))
             }
-            _ => Ok(Suspicion::WarmingUp {
+            Some(_) | None => Ok(Suspicion::WarmingUp {
                 samples: self.len,
                 required: config.min_samples(),
                 silence: Duration::from_nanos(silence),
