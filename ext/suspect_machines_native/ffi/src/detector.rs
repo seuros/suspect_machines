@@ -4,7 +4,8 @@ use std::cell::RefCell;
 use magnus::{Error, Ruby, Value, prelude::*, typed_data::Obj};
 use suspect_machines::Detector as Core;
 
-use crate::{Number, WINDOW, convert, nanoseconds};
+use crate::classes::keep;
+use crate::{Number, WINDOW, convert, nanoseconds_or_nil};
 
 #[magnus::wrap(class = "SuspectMachines::Detector", free_immediately, size)]
 pub struct Detector {
@@ -13,17 +14,21 @@ pub struct Detector {
 
 impl Detector {
     pub fn new(ruby: &Ruby, config: Value) -> Result<Self, Error> {
-        let config = convert::config(ruby, config)?;
-        let core = Core::new(config).map_err(|error| convert::config_error(ruby, error))?;
+        let core = convert::configured(ruby, config, Core::new)?;
         Ok(Self {
             core: RefCell::new(core),
         })
     }
 
+    /// Clone-then-keep: a `Recorded` answer is built through `new`.
     pub fn heartbeat(ruby: &Ruby, this: Obj<Self>, now: Number) -> Result<Value, Error> {
-        this.check_frozen()?;
-        let outcome = this.core.borrow_mut().heartbeat(now.duration());
-        convert::beat(ruby, outcome)
+        keep(
+            ruby,
+            this,
+            &this.core,
+            |core| core.heartbeat(now.duration()),
+            |outcome| convert::beat(ruby, outcome),
+        )
     }
 
     pub fn suspicion(ruby: &Ruby, this: &Self, now: Number) -> Result<Value, Error> {
@@ -40,12 +45,13 @@ impl Detector {
         self.core.borrow().samples()
     }
 
-    pub fn last_heartbeat(&self) -> Option<u64> {
-        self.core.borrow().last_heartbeat().map(nanoseconds)
+    pub fn last_heartbeat(ruby: &Ruby, this: &Self) -> Result<Option<u64>, Error> {
+        nanoseconds_or_nil(ruby, this.core.borrow().last_heartbeat())
     }
 
     pub fn config(ruby: &Ruby, this: &Self) -> Result<Value, Error> {
-        convert::config_value(ruby, this.core.borrow().config())
+        let config = this.core.borrow().config();
+        convert::config_value(ruby, config)
     }
 
     pub fn reset(this: Obj<Self>) -> Result<(), Error> {

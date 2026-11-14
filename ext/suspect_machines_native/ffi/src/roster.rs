@@ -4,7 +4,10 @@ use std::cell::RefCell;
 use magnus::{Error, Ruby, Symbol, Value, prelude::*, typed_data::Obj};
 use suspect_machines::{Forgetting, Roster as Core, Suspect};
 
-use crate::{CAPACITY, Level, Number, WINDOW, convert, data, nanoseconds, refusal};
+use crate::classes::{classes, keep};
+use crate::{
+    CAPACITY, Number, WINDOW, convert, nanoseconds_or_nil, phi_value, refusal, threshold_from,
+};
 
 #[magnus::wrap(class = "SuspectMachines::Roster", free_immediately, size)]
 pub struct Roster {
@@ -13,8 +16,7 @@ pub struct Roster {
 
 impl Roster {
     pub fn new(ruby: &Ruby, config: Value) -> Result<Self, Error> {
-        let config = convert::config(ruby, config)?;
-        let core = Core::new(config).map_err(|error| convert::config_error(ruby, error))?;
+        let core = convert::configured(ruby, config, Core::new)?;
         Ok(Self {
             core: RefCell::new(Box::new(core)),
         })
@@ -27,12 +29,13 @@ impl Roster {
         incarnation: Number,
         now: Number,
     ) -> Result<Value, Error> {
-        this.check_frozen()?;
-        let outcome = this
-            .core
-            .borrow_mut()
-            .heartbeat(peer.0, incarnation.0, now.duration());
-        convert::beat(ruby, outcome)
+        keep(
+            ruby,
+            this,
+            &this.core,
+            |core| core.heartbeat(peer.0, incarnation.0, now.duration()),
+            |outcome| convert::beat(ruby, outcome),
+        )
     }
 
     pub fn suspicion(ruby: &Ruby, this: &Self, peer: Number, now: Number) -> Result<Value, Error> {
@@ -45,10 +48,16 @@ impl Roster {
         ruby: &Ruby,
         this: &Self,
         now: Number,
-        threshold: Level,
+        threshold: Value,
         cursor: Number,
         limit: Number,
     ) -> Result<Value, Error> {
+        let (threshold, cursor) = (threshold_from(ruby, threshold)?, cursor.index(ruby)?);
+        let classes = classes(ruby)?;
+        let (suspect, scan_class) = (
+            ruby.get_inner(classes.suspect),
+            ruby.get_inner(classes.scan),
+        );
         let mut buffer = [Suspect::default(); CAPACITY];
         let out = buffer.get_mut(..limit.index(ruby)?).ok_or_else(|| {
             Error::new(
@@ -56,23 +65,21 @@ impl Roster {
                 "limit exceeds the compiled capacity",
             )
         })?;
-        let outcome =
-            this.core
-                .borrow()
-                .scan(now.duration(), threshold.0, cursor.index(ruby)?, out);
+        let outcome = this
+            .core
+            .borrow()
+            .scan(now.duration(), threshold, cursor, out);
         let scan = match outcome {
             Ok(scan) => scan,
             Err(refused) => return Ok(refusal(ruby, refused)),
         };
-        let suspect = data(ruby, "Suspect")?;
-        let suspects = ruby.ary_new_capa(scan.written);
-        for found in out.iter().take(scan.written) {
-            let entry: Value =
-                suspect.funcall("new", (found.peer, found.incarnation, found.phi.value()))?;
+        let suspects = ruby.ary_new_capa(scan.suspects());
+        for found in out.iter().take(scan.suspects()) {
+            let phi = phi_value(ruby, found.phi())?;
+            let entry: Value = suspect.funcall("new", (found.peer(), found.incarnation(), phi))?;
             suspects.push(entry)?;
         }
-        suspects.freeze();
-        data(ruby, "Scan")?.funcall("new", (suspects, scan.next))
+        scan_class.funcall("new", (suspects, scan.next()))
     }
 
     pub fn statistics(ruby: &Ruby, this: &Self, peer: Number) -> Result<Option<Value>, Error> {
@@ -84,8 +91,8 @@ impl Roster {
         self.core.borrow().incarnation(peer.0)
     }
 
-    pub fn last_heartbeat(&self, peer: Number) -> Option<u64> {
-        self.core.borrow().last_heartbeat(peer.0).map(nanoseconds)
+    pub fn last_heartbeat(ruby: &Ruby, this: &Self, peer: Number) -> Result<Option<u64>, Error> {
+        nanoseconds_or_nil(ruby, this.core.borrow().last_heartbeat(peer.0))
     }
 
     pub fn forget(ruby: &Ruby, this: Obj<Self>, peer: Number) -> Result<Symbol, Error> {
@@ -106,7 +113,8 @@ impl Roster {
     }
 
     pub fn config(ruby: &Ruby, this: &Self) -> Result<Value, Error> {
-        convert::config_value(ruby, this.core.borrow().config())
+        let config = this.core.borrow().config();
+        convert::config_value(ruby, config)
     }
 
     pub const fn capacity() -> usize {

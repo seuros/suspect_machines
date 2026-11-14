@@ -1,13 +1,7 @@
 #![allow(clippy::float_cmp, clippy::cast_precision_loss)]
 
 use super::*;
-use crate::test_support::{Rng, reference_normal_phi};
-
-/// `|actual - expected|` within `absolute` or within `relative * |expected|`.
-fn close(actual: f64, expected: f64, absolute: f64, relative: f64) -> bool {
-    let error = (actual - expected).abs();
-    error <= absolute || error <= relative * expected.abs()
-}
+use crate::test_support::{Rng, reference_normal_phi, within as close};
 
 /// `-log10(Q(z))` computed with 80-digit decimal arithmetic.
 const NORMAL_PHI: [(f64, f64); 20] = [
@@ -37,7 +31,7 @@ const NORMAL_PHI: [(f64, f64); 20] = [
 fn sqrt_matches_std_within_documented_bound() {
     let mut rng = Rng::new(0x5EED_0001);
     for _ in 0..20_000 {
-        let exponent = i32::try_from(rng.below(600)).unwrap_or(0) - 300;
+        let exponent = i32::try_from(rng.below(600)).expect("below 600") - 300;
         let x = (1.0 + rng.unit()) * 10f64.powi(exponent);
         assert!(close(sqrt(x), x.sqrt(), 0.0, 4e-16), "sqrt({x})");
     }
@@ -71,7 +65,7 @@ fn exp_matches_std_within_documented_bound() {
 fn ln_matches_std_within_documented_bound() {
     let mut rng = Rng::new(0x5EED_0003);
     for _ in 0..20_000 {
-        let exponent = i32::try_from(rng.below(600)).unwrap_or(0) - 300;
+        let exponent = i32::try_from(rng.below(600)).expect("below 600") - 300;
         let x = (1.0 + 9.0 * rng.unit()) * 10f64.powi(exponent);
         assert!(close(ln(x), x.ln(), 1e-15, 1e-14), "ln({x})");
         let near_one = 1.0 + (rng.unit() - 0.5) * 1e-3;

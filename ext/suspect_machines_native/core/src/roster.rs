@@ -3,7 +3,7 @@
 use core::time::Duration;
 
 use crate::{
-    Beat, Config, ConfigError, Phi, Refusal, Statistics, Suspicion, Threshold, nanos,
+    Beat, Config, ConfigError, Phi, Refusal, Statistics, Suspicion, Threshold, instant,
     window::Window,
 };
 
@@ -14,28 +14,86 @@ struct Slot<const W: usize> {
     window: Window<W>,
 }
 
+/// Whether `entry` is the occupied slot of `peer`.
+fn holds<const W: usize>(entry: Option<&Slot<W>>, peer: u64) -> bool {
+    entry.is_some_and(|slot| slot.peer == peer)
+}
+
 /// A peer whose phi has reached the scan threshold.
 ///
 /// `Suspect::default()` is a placeholder for pre-filling a scan buffer; the
 /// roster never emits it.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Suspect {
+    peer: u64,
+    incarnation: u64,
+    phi: Phi,
+}
+
+impl Suspect {
+    /// A suspect: any peer and incarnation, and its level.
+    #[must_use]
+    pub const fn new(peer: u64, incarnation: u64, phi: Phi) -> Self {
+        Self {
+            peer,
+            incarnation,
+            phi,
+        }
+    }
+
     /// Caller-assigned peer identifier.
-    pub peer: u64,
+    #[must_use]
+    pub const fn peer(&self) -> u64 {
+        self.peer
+    }
+
     /// Incarnation the statistics belong to.
-    pub incarnation: u64,
+    #[must_use]
+    pub const fn incarnation(&self) -> u64 {
+        self.incarnation
+    }
+
     /// Suspicion level at the scan instant.
-    pub phi: Phi,
+    #[must_use]
+    pub const fn phi(&self) -> Phi {
+        self.phi
+    }
 }
 
 /// Result of one bounded [`Roster::scan`] call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Scan {
-    /// Suspects written to the front of the output buffer.
-    pub written: usize,
+    suspects: usize,
+    next: Option<usize>,
+}
+
+impl Scan {
+    /// A scan a roster of `P` slots can answer: `None` when more than `P`
+    /// suspects are written or the resume cursor names no slot (`next >= P`).
+    #[must_use]
+    pub const fn new<const P: usize>(suspects: usize, next: Option<usize>) -> Option<Self> {
+        let resumable = match next {
+            Some(index) => index < P,
+            None => true,
+        };
+        if suspects > P || !resumable {
+            return None;
+        }
+        Some(Self { suspects, next })
+    }
+
+    /// How many suspects were written to the front of the output buffer.
+    #[must_use]
+    pub const fn suspects(&self) -> usize {
+        self.suspects
+    }
+
     /// Cursor to resume from when a suspect did not fit; `None` once every
     /// slot has been examined.
-    pub next: Option<usize>,
+    #[must_use]
+    pub const fn next(&self) -> Option<usize> {
+        self.next
+    }
 }
 
 /// What an honoured [`Roster::forget`] did.
@@ -79,7 +137,17 @@ impl<const P: usize, const W: usize> Roster<P, W> {
     }
 
     fn find(&self, peer: u64) -> Option<&Slot<W>> {
-        self.slots.iter().flatten().find(|slot| slot.peer == peer)
+        self.slots
+            .iter()
+            .find(|entry| holds(entry.as_ref(), peer))?
+            .as_ref()
+    }
+
+    /// The slot entry holding `peer`, to update or free.
+    fn entry(&mut self, peer: u64) -> Option<&mut Option<Slot<W>>> {
+        self.slots
+            .iter_mut()
+            .find(|entry| holds(entry.as_ref(), peer))
     }
 
     /// Records a heartbeat from `peer` at `now`. An unknown peer takes a free
@@ -98,13 +166,8 @@ impl<const P: usize, const W: usize> Roster<P, W> {
         incarnation: u64,
         now: Duration,
     ) -> Result<Beat, Refusal> {
-        let now = nanos(now).ok_or(Refusal::Overflow)?;
-        let tracked = self
-            .slots
-            .iter_mut()
-            .flatten()
-            .find(|slot| slot.peer == peer);
-        if let Some(slot) = tracked {
+        let now = instant(now)?;
+        if let Some(Some(slot)) = self.entry(peer) {
             if incarnation < slot.incarnation {
                 return Err(Refusal::Stale);
             }
@@ -115,8 +178,7 @@ impl<const P: usize, const W: usize> Roster<P, W> {
                 return Err(Refusal::TimeRegression);
             }
             slot.incarnation = incarnation;
-            slot.window.reset();
-            slot.window.observe(now)?;
+            slot.window = Window::started(now);
             return Ok(Beat::Restarted);
         }
         let free = self
@@ -124,14 +186,12 @@ impl<const P: usize, const W: usize> Roster<P, W> {
             .iter_mut()
             .find(|slot| slot.is_none())
             .ok_or(Refusal::Full)?;
-        let mut window = Window::new();
-        let beat = window.observe(now)?;
         *free = Some(Slot {
             peer,
             incarnation,
-            window,
+            window: Window::started(now),
         });
-        Ok(beat)
+        Ok(Beat::First)
     }
 
     /// The suspicion for `peer` at `now`.
@@ -142,18 +202,22 @@ impl<const P: usize, const W: usize> Roster<P, W> {
     /// [`Refusal::TimeRegression`] when `now` precedes the peer's last
     /// heartbeat.
     pub fn suspicion(&self, peer: u64, now: Duration) -> Result<Suspicion, Refusal> {
-        let now = nanos(now).ok_or(Refusal::Overflow)?;
+        let now = instant(now)?;
         let slot = self.find(peer).ok_or(Refusal::Untracked)?;
-        slot.window.suspicion(&self.config, now)
+        slot.window
+            .suspicion(&self.config, now)
+            .ok_or(Refusal::TimeRegression)
     }
 
     /// Writes peers whose phi has reached `threshold` at `now` into `out`,
     /// examining slots from `cursor` (zero to start). When a suspect does not
     /// fit, the scan stops and [`Scan::next`] names the slot to resume from.
     ///
-    /// Peers still warming up have no phi and are never listed; neither are
-    /// peers whose last heartbeat is later than `now`. Each call does at most
-    /// `P * W` steps of work.
+    /// Peers still warming up have no phi and are never listed. Neither are
+    /// peers whose last heartbeat is later than `now`: [`Roster::suspicion`]
+    /// refuses them with [`Refusal::TimeRegression`], but one peer's later
+    /// heartbeat says nothing about the others, so the scan skips that peer
+    /// and goes on. Each call does at most `P * W` steps of work.
     ///
     /// # Errors
     ///
@@ -165,31 +229,30 @@ impl<const P: usize, const W: usize> Roster<P, W> {
         cursor: usize,
         out: &mut [Suspect],
     ) -> Result<Scan, Refusal> {
-        let now = nanos(now).ok_or(Refusal::Overflow)?;
-        let mut written = 0;
+        let now = instant(now)?;
+        let mut suspects = 0;
         for (index, slot) in self.slots.iter().enumerate().skip(cursor) {
             let Some(slot) = slot else { continue };
-            let Ok(Suspicion::Measured(phi)) = slot.window.suspicion(&self.config, now) else {
-                continue;
+            let phi = match slot.window.suspicion(&self.config, now) {
+                Some(Suspicion::Measured(phi)) if phi.reaches(threshold) => phi,
+                // Below the threshold, or no phi yet (a tracked peer always
+                // has a heartbeat, so this is a warm-up).
+                Some(Suspicion::Measured(_) | Suspicion::WarmingUp { .. } | Suspicion::NoHeartbeat)
+                // The peer's last heartbeat is later than `now`: skipped,
+                // as documented above.
+                | None => continue,
             };
-            if !phi.reaches(threshold) {
-                continue;
-            }
-            let Some(entry) = out.get_mut(written) else {
+            let Some(entry) = out.get_mut(suspects) else {
                 return Ok(Scan {
-                    written,
+                    suspects,
                     next: Some(index),
                 });
             };
-            *entry = Suspect {
-                peer: slot.peer,
-                incarnation: slot.incarnation,
-                phi,
-            };
-            written += 1;
+            *entry = Suspect::new(slot.peer, slot.incarnation, phi);
+            suspects += 1;
         }
         Ok(Scan {
-            written,
+            suspects,
             next: None,
         })
     }
@@ -220,12 +283,8 @@ impl<const P: usize, const W: usize> Roster<P, W> {
     /// Never refuses. [`Forgetting::NotTracked`] is an idempotent repeat: the
     /// peer was already absent and nothing changed.
     pub fn forget(&mut self, peer: u64) -> Forgetting {
-        let tracked = self
-            .slots
-            .iter_mut()
-            .find(|slot| slot.as_ref().is_some_and(|slot| slot.peer == peer));
-        tracked.map_or(Forgetting::NotTracked, |slot| {
-            *slot = None;
+        self.entry(peer).map_or(Forgetting::NotTracked, |entry| {
+            *entry = None;
             Forgetting::Forgotten
         })
     }

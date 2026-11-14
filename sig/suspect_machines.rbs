@@ -4,6 +4,12 @@ module SuspectMachines
   # Every time, instant or span, is Integer nanoseconds of the caller's
   # monotonic clock. A non-Integer raises TypeError; negative or past 2**64-1
   # raises RangeError.
+  #
+  # Every Data value below is checked by the core when it is built, by the
+  # gem or by hand (including `with`): a wrong type raises TypeError, a value
+  # the core would never hold raises RangeError. The value classes are final:
+  # subclassing one raises TypeError and `allocate` is undefined. WINDOW and
+  # CAPACITY are the compiled 128 and 64.
 
   # Every refusal symbol: one per variant of the core's `Refusal`. A refused
   # call changed nothing. Each method below lists exactly the ones it can
@@ -20,8 +26,28 @@ module SuspectMachines
   # The core's `Suspicion`.
   type suspicion = :no_heartbeat | WarmingUp | Measured
 
-  # Mirrors the core's `Distribution::Normal`. `min_std_dev` is any Integer in
-  # 0..2**64-1; a zero floor is refused by `Config.new`, as in the core.
+  # Mirrors the core's `Phi`: `value` is a finite, non-negative Float
+  # (-0.0 is stored as 0.0). Integer input is stored as a Float.
+  class Phi < Data
+    attr_reader value: Float
+    def self.new: (Float | Integer value) -> Phi
+                | (value: Float | Integer) -> Phi
+    # The core's `Phi::millis`: thousandths, rounded down, saturating at 2**64-1.
+    def millis: () -> Integer
+    # The core's `Phi::reaches`. TypeError for anything but a Threshold.
+    def reaches?: (Threshold threshold) -> bool
+  end
+
+  # Mirrors the core's `Threshold`: `value` is a finite Float above zero.
+  class Threshold < Data
+    attr_reader value: Float
+    def self.new: (Float | Integer value) -> Threshold
+                | (value: Float | Integer) -> Threshold
+  end
+
+  # Mirrors the core's `Normal` (`Normal::new`), carried by
+  # `Distribution::Normal`. `min_std_dev` is an Integer in 1..2**64-1; zero
+  # raises RangeError.
   class Normal < Data
     attr_reader min_std_dev: Integer
     def self.new: (Integer min_std_dev) -> Normal
@@ -30,8 +56,8 @@ module SuspectMachines
 
   # Mirrors the core's `Config`. `new` takes the two arguments of the core's
   # `Config::new`, positionally, and starts with an acceptable pause of zero.
-  # Raises RangeError for a zero `min_samples` or a zero Normal floor,
-  # ArgumentError for an unknown distribution symbol.
+  # Raises RangeError for a zero `min_samples` or an unknown distribution
+  # symbol.
   class Config < Data
     attr_reader distribution: distribution
     attr_reader min_samples: Integer
@@ -41,7 +67,8 @@ module SuspectMachines
     def with_acceptable_pause: (Integer pause) -> Config
   end
 
-  # Mirrors the core's `Beat::Recorded`.
+  # Mirrors the core's `Beat::Recorded` (`Beat::recorded`): interval >= 1,
+  # samples in 1..WINDOW.
   class Recorded < Data
     attr_reader interval: Integer
     attr_reader samples: Integer
@@ -49,7 +76,8 @@ module SuspectMachines
                 | (interval: Integer, samples: Integer) -> Recorded
   end
 
-  # Mirrors the core's `Suspicion::WarmingUp`.
+  # Mirrors the core's `Suspicion::WarmingUp` (`Suspicion::warming_up`):
+  # samples < required <= WINDOW.
   class WarmingUp < Data
     attr_reader samples: Integer
     attr_reader required: Integer
@@ -58,36 +86,42 @@ module SuspectMachines
                 | (samples: Integer, required: Integer, silence: Integer) -> WarmingUp
   end
 
-  # Mirrors the core's `Suspicion::Measured`. `phi` is the core's `Phi`, a
-  # finite, non-negative Float.
+  # Mirrors the core's `Suspicion::Measured`. `phi` must be a Phi.
   class Measured < Data
-    attr_reader phi: Float
-    def self.new: (Float phi) -> Measured
-                | (phi: Float) -> Measured
+    attr_reader phi: Phi
+    def self.new: (Phi phi) -> Measured
+                | (phi: Phi) -> Measured
   end
 
-  # Mirrors the core's `Statistics`.
+  # Mirrors the core's `Statistics` (`Statistics::new`): samples in
+  # 1..WINDOW, 1 <= min <= max (equal for one sample), a mean within min..max
+  # and a positively signed deviation of at most (max - min) / 2 (both stored
+  # as Floats).
   class Statistics < Data
     attr_reader samples: Integer
     attr_reader mean_ns: Float
     attr_reader std_dev_ns: Float
     attr_reader min: Integer
     attr_reader max: Integer
-    def self.new: (Integer samples, Float mean_ns, Float std_dev_ns, Integer min, Integer max) -> Statistics
-                | (samples: Integer, mean_ns: Float, std_dev_ns: Float, min: Integer, max: Integer) -> Statistics
+    def self.new: (Integer samples, Float | Integer mean_ns, Float | Integer std_dev_ns, Integer min, Integer max)
+                -> Statistics
+                | (samples: Integer, mean_ns: Float | Integer, std_dev_ns: Float | Integer, min: Integer,
+                   max: Integer) -> Statistics
   end
 
-  # Mirrors the core's `Suspect`.
+  # Mirrors the core's `Suspect`: u64 peer and incarnation, and a Phi.
   class Suspect < Data
     attr_reader peer: Integer
     attr_reader incarnation: Integer
-    attr_reader phi: Float
-    def self.new: (Integer peer, Integer incarnation, Float phi) -> Suspect
-                | (peer: Integer, incarnation: Integer, phi: Float) -> Suspect
+    attr_reader phi: Phi
+    def self.new: (Integer peer, Integer incarnation, Phi phi) -> Suspect
+                | (peer: Integer, incarnation: Integer, phi: Phi) -> Suspect
   end
 
-  # Mirrors the core's `Scan`. `suspects` holds the suspects themselves, where
-  # the core reports how many it wrote to the caller's buffer.
+  # Mirrors the core's `Scan` (`Scan::new`). `suspects` holds the suspects
+  # themselves (a frozen copy, at most CAPACITY), where the core's
+  # `Scan::suspects` counts those it wrote to the caller's buffer; `next` is
+  # nil or below CAPACITY.
   class Scan < Data
     attr_reader suspects: Array[Suspect]
     attr_reader next: Integer?
@@ -103,8 +137,9 @@ module SuspectMachines
     def self.new: (Config config) -> Detector
     def window: () -> Integer
 
-    # Honoured: :first or a Recorded. Refused: :time_regression, :same_instant,
-    # :overflow (unreachable).
+    # Honoured: :first or a Recorded; each records `now` as the last
+    # heartbeat (the observation itself). Refused: :time_regression,
+    # :same_instant, :overflow (unreachable); a refusal records nothing.
     def heartbeat: (Integer now) -> (:first | Recorded | :time_regression | :same_instant | :overflow)
 
     # A query. Honoured: :no_heartbeat, a WarmingUp or a Measured. Refused:
@@ -131,8 +166,9 @@ module SuspectMachines
     def empty?: () -> bool
     def config: () -> Config
 
-    # Honoured: :first, a Recorded, or :restarted for a newer incarnation.
-    # Refused: :time_regression, :same_instant, :stale, :full, :overflow (unreachable).
+    # Honoured: :first, a Recorded, or :restarted for a newer incarnation;
+    # each records `now` as the peer's last heartbeat. Refused:
+    # :time_regression, :same_instant, :stale, :full, :overflow (unreachable).
     def heartbeat: (Integer peer, Integer incarnation, Integer now)
                  -> (beat | :time_regression | :same_instant | :stale | :full | :overflow)
 
@@ -143,9 +179,11 @@ module SuspectMachines
     def suspicion: (Integer peer, Integer now)
                  -> (suspicion | :untracked | :time_regression | :overflow)
 
-    # A query. `limit` is the length of the core's output buffer, 0..CAPACITY.
-    # Honoured: a Scan. Refused: :overflow (unreachable).
-    def scan: (Integer now, Float | Integer threshold, Integer cursor, Integer limit) -> (Scan | :overflow)
+    # A query. `threshold` must be a Threshold. `limit` is the length of the
+    # core's output buffer, 0..CAPACITY. Honoured: a Scan; a peer whose last
+    # heartbeat is later than `now` is skipped, not refused. Refused:
+    # :overflow (unreachable).
+    def scan: (Integer now, Threshold threshold, Integer cursor, Integer limit) -> (Scan | :overflow)
     def statistics: (Integer peer) -> Statistics?
     def incarnation: (Integer peer) -> Integer?
     def last_heartbeat: (Integer peer) -> Integer?

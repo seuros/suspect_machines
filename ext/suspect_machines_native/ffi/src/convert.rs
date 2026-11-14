@@ -1,12 +1,11 @@
 //! Ruby `Data` values to core types and back.
 use magnus::{Error, Ruby, Symbol, Value, prelude::*};
-use suspect_machines::{Beat, Config, ConfigError, Distribution, Refusal, Statistics, Suspicion};
+use suspect_machines::{
+    Beat, Config, ConfigError, Distribution, Normal, Refusal, Statistics, Suspicion,
+};
 
-use crate::{Number, data, nanoseconds, refusal};
-
-fn type_error(ruby: &Ruby, message: &'static str) -> Error {
-    Error::new(ruby.exception_type_error(), message)
-}
+use crate::classes::{classes, exact, field};
+use crate::{Number, nanoseconds, phi_value, refusal};
 
 /// A constructor error of the core, raised as `RangeError`. `DurationOverflow`
 /// and `ZeroWindow` cannot be reached from Ruby: times are `u64` nanoseconds
@@ -28,62 +27,85 @@ pub fn distribution(ruby: &Ruby, value: Value) -> Result<Distribution, Error> {
         return match symbol.name()?.as_ref() {
             "exponential" => Ok(Distribution::Exponential),
             _ => Err(Error::new(
-                ruby.exception_arg_error(),
+                ruby.exception_range_error(),
                 "distribution must be :exponential or a SuspectMachines::Normal",
             )),
         };
     }
-    if !value.is_kind_of(data(ruby, "Normal")?) {
-        return Err(type_error(
-            ruby,
-            "distribution must be :exponential or a SuspectMachines::Normal",
-        ));
-    }
-    let floor: Number = value.funcall("min_std_dev", ())?;
-    Ok(Distribution::Normal {
-        min_std_dev: floor.duration(),
-    })
+    let message = "distribution must be :exponential or a SuspectMachines::Normal";
+    let floor: Number = field(exact(ruby, value, classes(ruby)?.normal, message)?, 0)?;
+    normal(ruby, floor).map(Distribution::Normal)
+}
+
+/// The core's `Normal::new`: `RangeError` for a zero floor.
+pub fn normal(ruby: &Ruby, min_std_dev: Number) -> Result<Normal, Error> {
+    Normal::new(min_std_dev.duration()).map_err(|error| config_error(ruby, error))
+}
+
+/// A config read from Ruby, handed to the core's constructor `build` for a
+/// detector or a roster; either error is `RangeError`.
+pub fn configured<T>(
+    ruby: &Ruby,
+    value: Value,
+    build: impl FnOnce(Config) -> Result<T, ConfigError>,
+) -> Result<T, Error> {
+    build(config(ruby, value)?).map_err(|error| config_error(ruby, error))
 }
 
 fn distribution_value(ruby: &Ruby, distribution: Distribution) -> Result<Value, Error> {
     match distribution {
-        Distribution::Normal { min_std_dev } => {
-            data(ruby, "Normal")?.funcall("new", (nanoseconds(min_std_dev),))
+        Distribution::Normal(normal) => {
+            let floor = nanoseconds(ruby, normal.min_std_dev())?;
+            ruby.get_inner(classes(ruby)?.normal)
+                .funcall("new", (floor,))
         }
         Distribution::Exponential => Ok(ruby.to_symbol("exponential").as_value()),
     }
 }
 
 pub fn config(ruby: &Ruby, value: Value) -> Result<Config, Error> {
-    if !value.is_kind_of(data(ruby, "Config")?) {
-        return Err(type_error(ruby, "expected a SuspectMachines::Config"));
-    }
-    let distribution = distribution(ruby, value.funcall("distribution", ())?)?;
-    let (min_samples, pause): (Number, Number) = (
-        value.funcall("min_samples", ())?,
-        value.funcall("acceptable_pause", ())?,
-    );
+    let held = exact(
+        ruby,
+        value,
+        classes(ruby)?.config,
+        "expected a SuspectMachines::Config",
+    )?;
+    let (min_samples, pause): (Number, Number) = (field(held, 1)?, field(held, 2)?);
+    config_from(ruby, field(held, 0)?, min_samples, pause)
+}
+
+/// The core's `Config::new` then `Config::with_acceptable_pause`.
+pub fn config_from(
+    ruby: &Ruby,
+    distribution: Value,
+    min_samples: Number,
+    pause: Number,
+) -> Result<Config, Error> {
+    let distribution = self::distribution(ruby, distribution)?;
     Config::new(distribution, min_samples.index(ruby)?)
         .and_then(|config| config.with_acceptable_pause(pause.duration()))
         .map_err(|error| config_error(ruby, error))
 }
 
 pub fn config_value(ruby: &Ruby, config: Config) -> Result<Value, Error> {
-    data(ruby, "Config")?.funcall(
+    ruby.get_inner(classes(ruby)?.config).funcall(
         "__build",
         (
             distribution_value(ruby, config.distribution())?,
             config.min_samples(),
-            nanoseconds(config.acceptable_pause()),
+            nanoseconds(ruby, config.acceptable_pause())?,
         ),
     )
 }
 
+/// An answer of `heartbeat`; a `Recorded` is built through `new`. The
+/// interval is a difference of two `u64` instants, so it always fits.
 pub fn beat(ruby: &Ruby, outcome: Result<Beat, Refusal>) -> Result<Value, Error> {
     let name = match outcome {
         Ok(Beat::First) => "first",
         Ok(Beat::Recorded { interval, samples }) => {
-            return data(ruby, "Recorded")?.funcall("new", (nanoseconds(interval), samples));
+            let recorded = ruby.get_inner(classes(ruby)?.recorded);
+            return recorded.funcall("new", (nanoseconds(ruby, interval)?, samples));
         }
         Ok(Beat::Restarted) => "restarted",
         Err(refused) => return Ok(refusal(ruby, refused)),
@@ -98,8 +120,12 @@ pub fn suspicion(ruby: &Ruby, outcome: Result<Suspicion, Refusal>) -> Result<Val
             samples,
             required,
             silence,
-        }) => data(ruby, "WarmingUp")?.funcall("new", (samples, required, nanoseconds(silence))),
-        Ok(Suspicion::Measured(phi)) => data(ruby, "Measured")?.funcall("new", (phi.value(),)),
+        }) => ruby
+            .get_inner(classes(ruby)?.warming_up)
+            .funcall("new", (samples, required, nanoseconds(ruby, silence)?)),
+        Ok(Suspicion::Measured(phi)) => ruby
+            .get_inner(classes(ruby)?.measured)
+            .funcall("new", (phi_value(ruby, phi)?,)),
         Err(refused) => Ok(refusal(ruby, refused)),
     }
 }
@@ -108,15 +134,15 @@ pub fn statistics(ruby: &Ruby, statistics: Option<Statistics>) -> Result<Option<
     let Some(statistics) = statistics else {
         return Ok(None);
     };
-    data(ruby, "Statistics")?
+    ruby.get_inner(classes(ruby)?.statistics)
         .funcall(
             "new",
             (
-                statistics.samples,
-                statistics.mean_ns,
-                statistics.std_dev_ns,
-                nanoseconds(statistics.min),
-                nanoseconds(statistics.max),
+                statistics.samples(),
+                statistics.mean_ns(),
+                statistics.std_dev_ns(),
+                nanoseconds(ruby, statistics.min())?,
+                nanoseconds(ruby, statistics.max())?,
             ),
         )
         .map(Some)

@@ -15,6 +15,7 @@ SM = SuspectMachines
 
 normal = SM::Normal.new(100_000_000)   # the shape you assume intervals have, with a 100 ms floor on the deviation
 roster = SM::Roster.new(SM::Config.new(normal, 8))   # 8 intervals before any phi is reported
+act_at = SM::Threshold.new(8.0)
 
 def now = Process.clock_gettime(Process::CLOCK_MONOTONIC, :nanosecond)
 
@@ -23,7 +24,7 @@ def on_heartbeat(roster, peer, incarnation)
 end
 
 def on_tick(roster)
-  roster.scan(now, 8.0, 0, SM::Roster::CAPACITY).suspects.each do |suspect|
+  roster.scan(now, act_at, 0, SM::Roster::CAPACITY).suspects.each do |suspect|
     stop_routing_reads_to(suspect.peer)   # a hint, cheap to undo
   end
 end
@@ -133,19 +134,20 @@ Until a peer has `min_samples` intervals on record, the roster has no basis for 
 
 ```ruby
 # after heartbeats at 0, 1, 2 and 3 seconds
-roster.suspicion(7, 4 * SECOND)                    # => #<data SuspectMachines::Measured phi=0.30102999566398114>
-roster.suspicion(7, 4 * SECOND + 300_000_000).phi  # => 2.8696990359293695
-roster.suspicion(7, 4 * SECOND + 500_000_000).phi  # => 6.542645672390655
-roster.suspicion(9, 4 * SECOND)                    # => :untracked
+roster.suspicion(7, 4 * SECOND)
+# => #<data SuspectMachines::Measured phi=#<data SuspectMachines::Phi value=0.30102999566398114>>
+roster.suspicion(7, 4 * SECOND + 300_000_000).phi.value   # => 2.8696990359293695
+roster.suspicion(7, 4 * SECOND + 500_000_000).phi.millis  # => 6542
+roster.suspicion(9, 4 * SECOND)                           # => :untracked
 
 case roster.suspicion(7, now)
-in SM::Measured[phi:] then phi >= 8.0
+in SM::Measured[phi:] then phi.reaches?(act_at)
 in SM::WarmingUp[silence:] then silence > bootstrap_timeout
 in Symbol => refusal then false   # :untracked, :time_regression
 end
 ```
 
-`suspicion` answers the core's `Suspicion`: a `Measured` carrying `phi`, a Float, or a `WarmingUp` while there is none yet.
+`suspicion` answers the core's `Suspicion`: a `Measured` carrying a `Phi`, or a `WarmingUp` while there is none yet. A `Phi` is the core's: its `value` is a finite, non-negative Float, `millis` is the level in thousandths rounded down (the core's `Phi::millis`), and `reaches?(threshold)` is the core's `Phi::reaches`. A `Threshold` is the core's too: a finite Float above zero, and the only thing `reaches?` and `scan` take as a threshold.
 
 Phi is `-log10` of the probability that a heartbeat would still show up after this much silence. Phi 1 means about a 10% chance the peer is merely late. Phi 3 means about 0.1%. Phi 8 is a common place to start acting. Asking never changes anything, so ask as often as you like.
 
@@ -154,16 +156,16 @@ Phi is `-log10` of the probability that a heartbeat would still show up after th
 The probability depends on what you assume intervals look like. You must say which:
 
 ```ruby
-SM::Config.new(SM::Normal.new(100_000_000), 8)   # Distribution::Normal { min_std_dev }
+SM::Config.new(SM::Normal.new(100_000_000), 8)   # Distribution::Normal(Normal::new(min_std_dev))
 SM::Config.new(:exponential, 8)                  # Distribution::Exponential
 ```
 
-A `Normal` uses the mean and standard deviation of the window. A peer that beats like a metronome has a deviation of zero, which would make the first late nanosecond infinitely suspicious, so the deviation is never taken below `min_std_dev`; a zero floor is a `RangeError` from `Config.new`. `:exponential` uses only the mean: `phi = silence / (mean * ln 10)`. It climbs in a straight line and is more forgiving of bursty arrivals.
+A `Normal` uses the mean and standard deviation of the window. A peer that beats like a metronome has a deviation of zero, which would make the first late nanosecond infinitely suspicious, so the deviation is never taken below `min_std_dev`; a zero floor is a `RangeError` from `Normal.new`, as `Normal::new` refuses it in the core. `:exponential` uses only the mean: `phi = silence / (mean * ln 10)`. It climbs in a straight line and is more forgiving of bursty arrivals.
 
 ```ruby
 roster = SM::Roster.new(SM::Config.new(:exponential, 1))
 [0, 10, 20].each { |now| roster.heartbeat(1, 0, now) }
-roster.suspicion(1, 50).phi   # => 1.3028834457097553, three mean intervals of silence
+roster.suspicion(1, 50).phi.value   # => 1.3028834457097553, three mean intervals of silence
 ```
 
 The roster does not check that your traffic matches the shape you picked.
@@ -175,8 +177,8 @@ config = SM::Config.new(:exponential, 1).with_acceptable_pause(5)
 config.acceptable_pause       # => 5
 roster = SM::Roster.new(config)
 [0, 10, 20].each { |now| roster.heartbeat(1, 0, now) }
-roster.suspicion(1, 24).phi   # => 0.0
-roster.suspicion(1, 55).phi   # => 1.3028834457097553
+roster.suspicion(1, 24).phi.value   # => 0.0
+roster.suspicion(1, 55).phi.value   # => 1.3028834457097553
 roster.config == config       # => true
 ```
 
@@ -185,17 +187,17 @@ If your peers are known to stall for a garbage collection or a fsync, give them 
 ### Scan
 
 ```ruby
-scan = roster.scan(now, 8.0, 0, 64)   # now, threshold, cursor, limit
-scan.suspects      # => [#<data SuspectMachines::Suspect peer=7, incarnation=1, phi=23.118053405486076>]
+scan = roster.scan(now, SM::Threshold.new(8.0), 0, 64)   # now, threshold, cursor, limit
+scan.suspects.first.phi.value   # => 23.118053405486076, for peer 7, incarnation 1
 scan.next          # => nil
 ```
 
-`scan` lists every measured peer whose phi has reached the threshold, as a `Scan`. All four arguments are required, as they are in the core: the instant, the threshold, the cursor to start from (zero the first time) and the `limit`, which stands for the length of the buffer the core writes into and is at most `Roster::CAPACITY`. It returns at most `limit` suspects, and `next` is the cursor to resume from when there are more:
+`scan` lists every measured peer whose phi has reached the threshold, as a `Scan`. All four arguments are required, as they are in the core: the instant, the threshold, the cursor to start from (zero the first time) and the `limit`, which stands for the length of the buffer the core writes into and is at most `Roster::CAPACITY`. It returns at most `limit` suspects, and `next` is the cursor to resume from when there are more. A peer whose last heartbeat is later than `now` has no silence to measure at that instant and is skipped, not refused (`suspicion` for that peer answers `:time_regression`):
 
 ```ruby
-page = roster.scan(now, 8.0, 0, 16)
+page = roster.scan(now, act_at, 0, 16)
 while page.next
-  page = roster.scan(now, 8.0, page.next, 16)
+  page = roster.scan(now, act_at, page.next, 16)
 end
 ```
 
@@ -282,28 +284,30 @@ A `Detector` is the core's single-peer type: the same window (`Detector::WINDOW`
 
 ### What each call answers
 
-| Call | Honoured | Refused, nothing changed |
-| --- | --- | --- |
-| `Roster#heartbeat(peer, incarnation, now)` | `:first`, a `Recorded`, `:restarted` | `:time_regression`, `:same_instant`, `:stale`, `:full` |
-| `Roster#suspicion(peer, now)` | a `Measured`, or a `WarmingUp` | `:untracked`, `:time_regression` |
-| `Roster#scan(now, threshold, cursor, limit)` | a `Scan` | none reachable |
-| `Roster#statistics(peer)` | a `Statistics`, or `nil` before the second heartbeat | a query, never refuses |
-| `Roster#incarnation(peer)`, `Roster#last_heartbeat(peer)` | an Integer, or `nil` for an untracked peer | a query, never refuses |
-| `Roster#forget(peer)` | `:forgotten`, or the repeat `:not_tracked` | never refuses |
-| `Roster#size`, `Roster#empty?`, `Roster#config` | an Integer, a boolean, the `Config` | a query, never refuses |
-| `Detector#heartbeat(now)` | `:first`, a `Recorded` | `:time_regression`, `:same_instant` |
-| `Detector#suspicion(now)` | `:no_heartbeat`, a `WarmingUp`, a `Measured` | `:time_regression` |
-| `Detector#reset` | `nil` | never refuses |
+| Call | Honoured | Records `now` | Refused, nothing changed |
+| --- | --- | --- | --- |
+| `Roster#heartbeat(peer, incarnation, now)` | `:first`, a `Recorded`, `:restarted` | every honoured answer: `now` becomes the peer's last heartbeat | `:time_regression`, `:same_instant`, `:stale`, `:full` |
+| `Roster#suspicion(peer, now)` | a `Measured`, or a `WarmingUp` | never: a query | `:untracked`, `:time_regression` |
+| `Roster#scan(now, threshold, cursor, limit)` | a `Scan` | never: a query | none reachable |
+| `Roster#statistics(peer)` | a `Statistics`, or `nil` before the second heartbeat | no clock | a query, never refuses |
+| `Roster#incarnation(peer)`, `Roster#last_heartbeat(peer)` | an Integer, or `nil` for an untracked peer | no clock | a query, never refuses |
+| `Roster#forget(peer)` | `:forgotten`, or the repeat `:not_tracked` | no clock | never refuses |
+| `Roster#size`, `Roster#empty?`, `Roster#config` | an Integer, a boolean, the `Config` | no clock | a query, never refuses |
+| `Detector#heartbeat(now)` | `:first`, a `Recorded` | every honoured answer: `now` becomes the last heartbeat | `:time_regression`, `:same_instant` |
+| `Detector#suspicion(now)` | `:no_heartbeat`, a `WarmingUp`, a `Measured` | never: a query | `:time_regression` |
+| `Detector#reset` | `nil` | no clock; the last heartbeat is forgotten | never refuses |
+
+A heartbeat is the observation of `now` itself, so every honoured heartbeat answer depends on `now` and records it; there is no honoured repeat of a heartbeat (the same instant again is `:same_instant`). `suspicion` and `scan` depend on `now` but are queries: they never change the roster or detector, so a later call may ask about an earlier instant, down to the last heartbeat.
 
 The six refusal symbols are the six variants of the core's `Refusal`, each with its own symbol; there is no catch-all. One of them, `:overflow`, cannot be reached from Ruby: it is the core's answer to a time past `2**64-1` nanoseconds, and such an Integer raises `RangeError` before the core sees it. It is what `heartbeat`, `suspicion` and `scan` would answer. A roster's `suspicion` never answers `:no_heartbeat`, because a tracked peer always has a heartbeat.
 
-`Normal`, `Config`, `Recorded`, `WarmingUp`, `Measured`, `Statistics`, `Suspect` and `Scan` are frozen `Data` values with the fields of the core types they are named after. An enum's unit variant is a symbol and a variant that carries something is a `Data` named after it: a distribution is `:exponential` or a `Normal`, a beat is `:first`, a `Recorded` or `:restarted`, a suspicion is `:no_heartbeat`, a `WarmingUp` or a `Measured`. A phi and a threshold, the core's `Phi` and `Threshold`, are Floats. A `Scan` carries the suspects themselves where the core's counts how many it `written` to the caller's buffer. `Roster#size` is the core's `len`.
+`Phi`, `Threshold`, `Normal`, `Config`, `Recorded`, `WarmingUp`, `Measured`, `Statistics`, `Suspect` and `Scan` are frozen `Data` values with the fields of the core types they are named after. Each is checked by the core when it is built, whether the gem built it or you did (and by `with`): a wrong type raises `TypeError`, a value the core would never hold raises `RangeError`. So `Phi.new(-1)`, `Threshold.new(0)`, `Recorded.new(0, 1)` (a zero interval), `WarmingUp.new(3, 3, 0)` (the warm-up is over), `Statistics.new(1, 1.0, 0.0, 2, 1)` (min above max), `Statistics.new(2, 5.0, 0.0, 10, 20)` (a mean below the shortest interval), `Normal.new(0)` (no floor) and `Scan.new([], 64)` (no such slot) all raise `RangeError`; `Measured.new(1.0)` and `Suspect.new(1, 0, 4.0)` raise `TypeError`, because a phi is a `Phi`. The limits are the core's constructors for the compiled window and capacity: `Normal::new`, `Beat::recorded`, `Suspicion::warming_up`, `Statistics::new` and `Scan::new`. The classes are final: subclassing one raises `TypeError` and `allocate` is gone, so no instance skips the check. Sealing stops accidents, not reflection (a named subclass's constant is bound before `inherited` raises, and `Marshal.load` skips `initialize`), so the binding trusts no value it reads: each must be an instance of exactly the gem's class (a subclass raises `TypeError`) and is rebuilt through the core's constructor (a forged field raises `RangeError`). The classes are resolved once, at load. Building an answer runs Ruby code (`new`), so `heartbeat` (on a `Detector` and a `Roster`) decides on a copy, builds the answer, and keeps the copy only if the object is still unfrozen and unchanged: if building raises, the heartbeat is not recorded; if it freezes the object, `FrozenError`; if it re-enters and changes the object, `RuntimeError`, and the outer call is not applied. An enum's unit variant is a symbol and a variant that carries something is a `Data` named after it: a distribution is `:exponential` or a `Normal`, a beat is `:first`, a `Recorded` or `:restarted`, a suspicion is `:no_heartbeat`, a `WarmingUp` or a `Measured`. A phi and a threshold are the core's `Phi` and `Threshold`, as `Data` values carrying a Float `value`. A `Scan`'s `suspects` are the suspects themselves, where the core's `Scan::suspects` counts how many it wrote to the caller's buffer. `Roster#size` is the core's `len`.
 
 ## The Rules of the Picket
 
 - **Phi is advisory.** It is a statement about arrival statistics. It cannot revoke a lease, depose a leader, or release a lock. Anything that changes ownership needs a durable authority and fencing at the resource.
 - **Assumptions are arguments.** A `Config` takes its distribution and `min_samples` positionally and neither has a default. A `Normal` requires its `min_std_dev`. The acceptable pause is zero until `with_acceptable_pause` says otherwise, as in the core. `scan` has no default cursor or limit.
-- **Peers, incarnations and times are Integers** in `0..2**64-1`. Times are nanoseconds. Floats, nil, and strings raise `TypeError`, and so does anything but a `Config` where one belongs. Out of range raises `RangeError`, and so do a zero `min_samples`, a zero deviation floor, a `min_samples` above the window and a `limit` above the capacity. An unknown distribution symbol raises `ArgumentError`. A threshold is a finite Float or Integer above zero.
+- **Peers, incarnations and times are Integers** in `0..2**64-1`. Times are nanoseconds. Floats, nil, and strings raise `TypeError`, and so does anything but a `Config` where one belongs. Out of range raises `RangeError`, and so do a zero `min_samples`, a zero deviation floor, a `min_samples` above the window and a `limit` above the capacity. So does an unknown distribution symbol. A threshold is a `Threshold`; anything else where one belongs raises `TypeError`.
 - **Refusals don't raise.** `:time_regression`, `:same_instant`, `:stale`, `:full` and `:untracked` are answers. A refused heartbeat changes nothing. Only malformed input raises.
 - **Same calls, same floats.** The square root, exponential, logarithm and normal tail are computed in the gem from plain IEEE arithmetic, with no platform math library. Phi is within `1e-12` (absolute or relative) of the exact value for the statistics it was given.
 - **Frozen means frozen.** `freeze` a roster and `heartbeat` and `forget` raise `FrozenError`; `freeze` a detector and `heartbeat` and `reset` do. Reads still work.

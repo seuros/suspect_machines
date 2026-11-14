@@ -22,16 +22,41 @@ pub use roster::{Forgetting, Roster, Scan, Suspect};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Distribution {
     /// Intervals are normally distributed around the window mean, as in
-    /// Hayashibara et al. The window's population standard deviation is
-    /// floored at `min_std_dev`, so a perfectly regular sender does not make
-    /// the first late nanosecond infinitely suspicious.
-    Normal {
-        /// Non-zero floor for the standard deviation.
-        min_std_dev: Duration,
-    },
+    /// Hayashibara et al., with the deviation floor of [`Normal`].
+    Normal(Normal),
     /// Intervals are exponentially distributed with the window mean. Only the
     /// mean is used: `phi = silence / (mean * ln 10)`.
     Exponential,
+}
+
+/// The normal model's deviation floor: the window's population standard
+/// deviation is floored at `min_std_dev`, so a perfectly regular sender does
+/// not make the first late nanosecond infinitely suspicious.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Normal {
+    floor_ns: u64,
+}
+
+impl Normal {
+    /// A normal model floored at `min_std_dev`.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::ZeroDeviationFloor`] for a zero floor and
+    /// [`ConfigError::DurationOverflow`] past `u64` nanoseconds.
+    pub const fn new(min_std_dev: Duration) -> Result<Self, ConfigError> {
+        match nanos(min_std_dev) {
+            None => Err(ConfigError::DurationOverflow),
+            Some(0) => Err(ConfigError::ZeroDeviationFloor),
+            Some(floor_ns) => Ok(Self { floor_ns }),
+        }
+    }
+
+    /// The non-zero floor for the standard deviation.
+    #[must_use]
+    pub const fn min_std_dev(self) -> Duration {
+        Duration::from_nanos(self.floor_ns)
+    }
 }
 
 /// Why a configuration was refused.
@@ -63,19 +88,10 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// [`ConfigError::ZeroWarmUp`] for zero `min_samples`,
-    /// [`ConfigError::ZeroDeviationFloor`] or
-    /// [`ConfigError::DurationOverflow`] for an unusable normal floor.
+    /// [`ConfigError::ZeroWarmUp`] for zero `min_samples`.
     pub const fn new(distribution: Distribution, min_samples: usize) -> Result<Self, ConfigError> {
         if min_samples == 0 {
             return Err(ConfigError::ZeroWarmUp);
-        }
-        if let Distribution::Normal { min_std_dev } = distribution {
-            match nanos(min_std_dev) {
-                None => return Err(ConfigError::DurationOverflow),
-                Some(0) => return Err(ConfigError::ZeroDeviationFloor),
-                Some(_) => {}
-            }
         }
         Ok(Self {
             distribution,
@@ -136,8 +152,8 @@ impl Config {
         let silence = window::to_f64(silence_ns);
         let pause = window::to_f64(self.pause_ns);
         Phi(match self.distribution {
-            Distribution::Normal { min_std_dev } => {
-                let floor = window::to_f64(nanos(min_std_dev).unwrap_or(u64::MAX));
+            Distribution::Normal(normal) => {
+                let floor = window::to_f64(normal.floor_ns);
                 let deviation = if statistics.std_dev_ns > floor {
                     statistics.std_dev_ns
                 } else {
@@ -202,6 +218,19 @@ pub enum Beat {
     Restarted,
 }
 
+impl Beat {
+    /// The [`Beat::Recorded`] a window of `W` intervals can answer: `None`
+    /// for a zero interval (refused as [`Refusal::SameInstant`]) or a sample
+    /// count outside `1..=W`.
+    #[must_use]
+    pub const fn recorded<const W: usize>(interval: Duration, samples: usize) -> Option<Self> {
+        if interval.is_zero() || samples == 0 || samples > W {
+            return None;
+        }
+        Some(Self::Recorded { interval, samples })
+    }
+}
+
 /// A suspicion level: `-log10` of the probability, under the configured
 /// distribution, that a heartbeat would still arrive after this much silence.
 ///
@@ -212,6 +241,17 @@ pub enum Beat {
 pub struct Phi(f64);
 
 impl Phi {
+    /// `None` unless `value` is finite and not negative. A negative zero is
+    /// stored as zero.
+    #[must_use]
+    pub const fn new(value: f64) -> Option<Self> {
+        if value.is_finite() && value >= 0.0 {
+            Some(Self(if value == 0.0 { 0.0 } else { value }))
+        } else {
+            None
+        }
+    }
+
     /// The level as a finite, non-negative `f64`.
     #[must_use]
     pub const fn value(self) -> f64 {
@@ -278,19 +318,124 @@ pub enum Suspicion {
     Measured(Phi),
 }
 
+impl Suspicion {
+    /// The [`Suspicion::WarmingUp`] a window of `W` intervals can answer:
+    /// `None` unless `samples < required <= W`, since a warm-up is at least
+    /// one interval and never longer than the window.
+    #[must_use]
+    pub const fn warming_up<const W: usize>(
+        samples: usize,
+        required: usize,
+        silence: Duration,
+    ) -> Option<Self> {
+        if samples >= required || required > W {
+            return None;
+        }
+        Some(Self::WarmingUp {
+            samples,
+            required,
+            silence,
+        })
+    }
+}
+
 /// Statistics of the intervals currently in the window.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Statistics {
+    samples: usize,
+    mean_ns: f64,
+    std_dev_ns: f64,
+    min: Duration,
+    max: Duration,
+}
+
+impl Statistics {
+    /// Statistics a window of `W` intervals can report: `None` unless
+    /// `samples` is in `1..=W`, `1 ns <= min <= max` (a zero interval is
+    /// never stored, and one interval is its own min and max), the mean lies
+    /// within `min..=max`, and the deviation is a finite, positively signed
+    /// number no more than half of `max - min` (Popoviciu's bound), all
+    /// compared as the `f64` nanoseconds the window computes with.
+    #[must_use]
+    pub const fn new<const W: usize>(
+        samples: usize,
+        mean_ns: f64,
+        std_dev_ns: f64,
+        min: Duration,
+        max: Duration,
+    ) -> Option<Self> {
+        let counted = samples > 0 && samples <= W;
+        let ordered = !min.is_zero()
+            && min.as_nanos() <= max.as_nanos()
+            && (samples > 1 || min.as_nanos() == max.as_nanos());
+        let (low, high) = (duration_to_f64(min), duration_to_f64(max));
+        let centred = mean_ns >= low && mean_ns <= high;
+        let spread = std_dev_ns.is_sign_positive() && std_dev_ns <= half_range(low, high);
+        if counted && ordered && centred && spread {
+            Some(Self {
+                samples,
+                mean_ns,
+                std_dev_ns,
+                min,
+                max,
+            })
+        } else {
+            None
+        }
+    }
+
     /// Intervals in the window.
-    pub samples: usize,
+    #[must_use]
+    pub const fn samples(&self) -> usize {
+        self.samples
+    }
+
     /// Arithmetic mean, in nanoseconds.
-    pub mean_ns: f64,
+    #[must_use]
+    pub const fn mean_ns(&self) -> f64 {
+        self.mean_ns
+    }
+
     /// Population standard deviation, in nanoseconds, before any floor.
-    pub std_dev_ns: f64,
+    #[must_use]
+    pub const fn std_dev_ns(&self) -> f64 {
+        self.std_dev_ns
+    }
+
     /// Shortest interval.
-    pub min: Duration,
+    #[must_use]
+    pub const fn min(&self) -> Duration {
+        self.min
+    }
+
     /// Longest interval.
-    pub max: Duration,
+    #[must_use]
+    pub const fn max(&self) -> Duration {
+        self.max
+    }
+}
+
+/// A duration's nanoseconds as the nearest `f64`.
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "nanoseconds round to the nearest f64, as the window computes"
+)]
+pub(crate) const fn duration_to_f64(duration: Duration) -> f64 {
+    duration.as_nanos() as f64
+}
+
+/// Half the spread between two interval lengths: the largest population
+/// standard deviation intervals within them can have (Popoviciu).
+pub(crate) const fn half_range(low: f64, high: f64) -> f64 {
+    (high - low) / 2.0
+}
+
+/// `now` as `u64` nanoseconds, or [`Refusal::Overflow`].
+const fn instant(now: Duration) -> Result<u64, Refusal> {
+    match nanos(now) {
+        Some(now) => Ok(now),
+        None => Err(Refusal::Overflow),
+    }
 }
 
 /// `duration` in nanoseconds when it fits `u64` (about 584 years).

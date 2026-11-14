@@ -1,10 +1,14 @@
 #![allow(clippy::float_cmp, clippy::cast_precision_loss)]
 
+use std::assert_matches;
+
 use super::*;
 use crate::test_support::{
     Expected, MILLI, Model, Rng, SECOND, at, close, detector, exponential, measured, normal,
     random_config, random_gap, threshold,
 };
+
+mod values;
 
 #[test]
 fn first_heartbeat_warm_up_and_measurement_are_explicit() {
@@ -28,10 +32,10 @@ fn first_heartbeat_warm_up_and_measurement_are_explicit() {
             samples: 1,
         })
     );
-    assert!(matches!(
+    assert_matches!(
         detector.suspicion(at(60 * SECOND)),
         Ok(Suspicion::WarmingUp { samples: 1, .. })
-    ));
+    );
     assert!(detector.heartbeat(at(3 * SECOND)).is_ok());
     assert_eq!(detector.samples(), 2);
     assert_eq!(detector.last_heartbeat(), Some(at(3 * SECOND)));
@@ -58,13 +62,13 @@ fn statistics_slide_over_the_last_window_intervals() {
         assert!(detector.heartbeat(at(now)).is_ok());
     }
     // Window holds 30, 40, 100.
-    let statistics = detector.statistics().unwrap_or_else(|| panic!("no data"));
-    assert_eq!(statistics.samples, 3);
-    assert!(close(statistics.mean_ns, 170.0 / 3.0, 1e-12));
+    let statistics = detector.statistics().expect("intervals in the window");
+    assert_eq!(statistics.samples(), 3);
+    assert!(close(statistics.mean_ns(), 170.0 / 3.0, 1e-12));
     let variance = (30f64.powi(2) + 40f64.powi(2) + 100f64.powi(2)) / 3.0 - (170f64 / 3.0).powi(2);
-    assert!(close(statistics.std_dev_ns, variance.sqrt(), 1e-12));
-    assert_eq!(statistics.min, at(30));
-    assert_eq!(statistics.max, at(100));
+    assert!(close(statistics.std_dev_ns(), variance.sqrt(), 1e-12));
+    assert_eq!(statistics.min(), at(30));
+    assert_eq!(statistics.max(), at(100));
     // Exponential: phi = silence / (mean * ln 10).
     let phi = measured(detector.suspicion(at(now + 170)));
     assert!(close(phi, 3.0 * std::f64::consts::LOG10_E, 1e-12));
@@ -74,11 +78,7 @@ fn statistics_slide_over_the_last_window_intervals() {
 #[test]
 fn acceptable_pause_shifts_both_distributions() {
     let pause = at(500 * MILLI);
-    let shifted = |config: Config| {
-        config
-            .with_acceptable_pause(pause)
-            .unwrap_or_else(|error| panic!("{error:?}"))
-    };
+    let shifted = |config: Config| config.with_acceptable_pause(pause).expect("a pause");
     for (plain, padded) in [
         (normal(100 * MILLI, 1), shifted(normal(100 * MILLI, 1))),
         (exponential(1), shifted(exponential(1))),
@@ -117,15 +117,15 @@ fn deviation_floor_bounds_regular_senders_and_real_jitter_overrides_it() {
         };
         assert!(jittery.heartbeat(at(now)).is_ok());
     }
-    let statistics = regular.statistics().unwrap_or_else(|| panic!("no data"));
-    assert_eq!(statistics.std_dev_ns, 0.0);
-    assert_eq!(statistics.mean_ns, SECOND as f64);
+    let statistics = regular.statistics().expect("intervals in the window");
+    assert_eq!(statistics.std_dev_ns(), 0.0);
+    assert_eq!(statistics.mean_ns(), SECOND as f64);
     // sigma = floor = 50 ms, so 150 ms late is z = 3, not infinity.
     let floored = measured(regular.suspicion(at(8 * SECOND + 1_150 * MILLI)));
     assert!(close(floored, 2.869_699_035_929_369, 1e-9));
     // sigma = 400 ms measured, above the floor: 1.2 s late is z = 3.
-    let spread = jittery.statistics().unwrap_or_else(|| panic!("no data"));
-    assert!(close(spread.std_dev_ns, 400.0 * MILLI as f64, 1e-12));
+    let spread = jittery.statistics().expect("intervals in the window");
+    assert!(close(spread.std_dev_ns(), 400.0 * MILLI as f64, 1e-12));
     let measured_phi = measured(jittery.suspicion(at(now + 2_200 * MILLI)));
     assert!(close(measured_phi, 2.869_699_035_929_369, 1e-9));
 }
@@ -156,51 +156,51 @@ fn refused_heartbeats_and_reads_do_not_mutate() {
 
 #[test]
 fn configuration_refusals_are_explicit() {
-    let floor = |duration| Distribution::Normal {
-        min_std_dev: duration,
-    };
-    assert_eq!(
-        Config::new(Distribution::Exponential, 0),
-        Err(ConfigError::ZeroWarmUp)
-    );
-    assert_eq!(
-        Config::new(floor(Duration::ZERO), 1),
-        Err(ConfigError::ZeroDeviationFloor)
-    );
-    assert_eq!(
-        Config::new(floor(Duration::MAX), 1),
-        Err(ConfigError::DurationOverflow)
-    );
-    assert_eq!(
-        exponential(1).with_acceptable_pause(Duration::MAX),
-        Err(ConfigError::DurationOverflow)
-    );
-    assert_eq!(
-        Detector::<0>::new(exponential(1)),
-        Err(ConfigError::ZeroWindow)
-    );
-    assert_eq!(
-        Detector::<4>::new(exponential(5)),
-        Err(ConfigError::WarmUpExceedsWindow)
-    );
+    for (refused, error) in [
+        (Normal::new(Duration::ZERO), ConfigError::ZeroDeviationFloor),
+        (Normal::new(Duration::MAX), ConfigError::DurationOverflow),
+    ] {
+        assert_eq!(refused, Err(error));
+    }
+    for (refused, error) in [
+        (
+            Config::new(Distribution::Exponential, 0),
+            ConfigError::ZeroWarmUp,
+        ),
+        (
+            exponential(1).with_acceptable_pause(Duration::MAX),
+            ConfigError::DurationOverflow,
+        ),
+    ] {
+        assert_eq!(refused, Err(error));
+    }
+    for (refused, error) in [
+        (
+            Detector::<0>::new(exponential(1)).err(),
+            ConfigError::ZeroWindow,
+        ),
+        (
+            Detector::<4>::new(exponential(5)).err(),
+            ConfigError::WarmUpExceedsWindow,
+        ),
+        (
+            Roster::<2, 0>::new(exponential(1)).err(),
+            ConfigError::ZeroWindow,
+        ),
+        (
+            Roster::<2, 4>::new(exponential(5)).err(),
+            ConfigError::WarmUpExceedsWindow,
+        ),
+    ] {
+        assert_eq!(refused, Some(error));
+    }
     assert!(Detector::<4>::new(exponential(4)).is_ok());
-    assert_eq!(
-        Roster::<2, 0>::new(exponential(1)),
-        Err(ConfigError::ZeroWindow)
-    );
-    assert_eq!(
-        Roster::<2, 4>::new(exponential(5)),
-        Err(ConfigError::WarmUpExceedsWindow)
-    );
     let config = normal(7, 3);
     assert_eq!(config.min_samples(), 3);
-    assert_eq!(config.distribution(), floor(at(7)));
+    let floor = Normal::new(at(7)).expect("a non-zero floor");
+    assert_eq!(floor.min_std_dev(), at(7));
+    assert_eq!(config.distribution(), Distribution::Normal(floor));
     assert_eq!(config.acceptable_pause(), Duration::ZERO);
-    assert_eq!(Threshold::new(0.0), None);
-    assert_eq!(Threshold::new(-1.0), None);
-    assert_eq!(Threshold::new(f64::NAN), None);
-    assert_eq!(Threshold::new(f64::INFINITY), None);
-    assert_eq!(threshold(8.0).value(), 8.0);
 }
 
 #[test]
@@ -222,10 +222,10 @@ fn u64_limits_stay_finite_and_exact() {
         })
     );
     assert_eq!(detector.heartbeat(at(u64::MAX)), Err(Refusal::SameInstant));
-    let statistics = detector.statistics().unwrap_or_else(|| panic!("no data"));
-    assert_eq!(statistics.max, at(u64::MAX - 1));
-    assert_eq!(statistics.min, at(1));
-    assert!(statistics.mean_ns.is_finite() && statistics.std_dev_ns.is_finite());
+    let statistics = detector.statistics().expect("intervals in the window");
+    assert_eq!(statistics.max(), at(u64::MAX - 1));
+    assert_eq!(statistics.min(), at(1));
+    assert!(statistics.mean_ns().is_finite() && statistics.std_dev_ns().is_finite());
     assert!(measured(detector.suspicion(at(u64::MAX))).is_finite());
     assert_eq!(
         detector.suspicion(Duration::from_nanos(u64::MAX) + at(1)),
@@ -233,7 +233,7 @@ fn u64_limits_stay_finite_and_exact() {
     );
 
     // The steepest reachable slope: 1 ns intervals, 1 ns floor, 584 years late.
-    let mut steep = Detector::<2>::new(normal(1, 1)).unwrap_or_else(|error| panic!("{error:?}"));
+    let mut steep = crate::test_support::detector::<2>(normal(1, 1));
     assert!(steep.heartbeat(at(0)).is_ok());
     assert!(steep.heartbeat(at(1)).is_ok());
     let Ok(Suspicion::Measured(phi)) = steep.suspicion(at(u64::MAX)) else {
@@ -275,8 +275,8 @@ fn detector_matches_naive_model_on_random_schedules() {
             }
             assert_eq!(detector.samples(), model.intervals.len());
             if let Some(statistics) = detector.statistics() {
-                assert!(close(statistics.mean_ns, model.mean(), 1e-12));
-                assert!(close(statistics.std_dev_ns, model.std_dev(), 1e-9));
+                assert!(close(statistics.mean_ns(), model.mean(), 1e-12));
+                assert!(close(statistics.std_dev_ns(), model.std_dev(), 1e-9));
             } else {
                 assert_eq!(model.intervals.len(), 0);
             }

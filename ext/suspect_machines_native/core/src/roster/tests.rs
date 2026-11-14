@@ -1,6 +1,6 @@
 #![allow(clippy::float_cmp)]
 
-use std::vec::Vec;
+use std::{assert_matches, vec::Vec};
 
 use super::*;
 use crate::test_support::{
@@ -30,25 +30,22 @@ fn roster_tracks_incarnations_capacity_and_forgetting() {
     assert_eq!(roster.forget(9), Forgetting::NotTracked);
     assert_eq!(roster, full);
 
-    assert!(matches!(
+    assert_matches!(
         roster.heartbeat(7, 3, at(20)),
         Ok(Beat::Recorded { samples: 1, .. })
-    ));
-    assert_eq!(roster.statistics(7).map(|s| s.samples), Some(1));
+    );
+    assert_eq!(roster.statistics(7).map(|s| s.samples()), Some(1));
     assert_eq!(roster.incarnation(7), Some(3));
     assert_eq!(roster.last_heartbeat(7), Some(at(20)));
-    assert!(matches!(
-        roster.suspicion(7, at(30)),
-        Ok(Suspicion::Measured(_))
-    ));
+    assert_matches!(roster.suspicion(7, at(30)), Ok(Suspicion::Measured(_)));
     // A restart at the same instant is accepted and discards the statistics.
     assert_eq!(roster.heartbeat(7, u64::MAX, at(20)), Ok(Beat::Restarted));
     assert_eq!(roster.incarnation(7), Some(u64::MAX));
     assert_eq!(roster.statistics(7), None);
-    assert!(matches!(
+    assert_matches!(
         roster.suspicion(7, at(30)),
         Ok(Suspicion::WarmingUp { samples: 0, .. })
-    ));
+    );
     assert_eq!(roster.heartbeat(7, 3, at(40)), Err(Refusal::Stale));
 
     assert_eq!(roster.forget(7), Forgetting::Forgotten);
@@ -85,74 +82,32 @@ fn scan_is_bounded_resumable_and_skips_peers_without_phi() {
     let limit = threshold(3.0);
     let now = at(120);
     // phi = silence / (10 * ln 10): at least 3 needs 70 ns of silence.
+    let shape = |scan: Result<Scan, Refusal>| scan.map(|scan| (scan.suspects(), scan.next()));
     let mut all = [Suspect::default(); 6];
-    let scan = roster.scan(now, limit, 0, &mut all);
-    assert_eq!(
-        scan,
-        Ok(Scan {
-            written: 4,
-            next: None,
-        })
-    );
-    assert_eq!(all.map(|suspect| suspect.peer), [0, 1, 2, 3, 0, 0]);
-    assert_eq!(all[2].incarnation, 2);
-    assert!(close(
-        all[0].phi.value(),
-        10.0 * std::f64::consts::LOG10_E,
-        1e-12
-    ));
+    assert_eq!(shape(roster.scan(now, limit, 0, &mut all)), Ok((4, None)));
+    assert_eq!(all.map(|suspect| suspect.peer()), [0, 1, 2, 3, 0, 0]);
+    assert_eq!(all[2].incarnation(), 2);
+    let expected = 10.0 * std::f64::consts::LOG10_E;
+    assert!(close(all[0].phi().value(), expected, 1e-12));
 
     let mut page = [Suspect::default(); 3];
-    let first = roster.scan(now, limit, 0, &mut page);
     assert_eq!(
-        first,
-        Ok(Scan {
-            written: 3,
-            next: Some(3),
-        })
+        shape(roster.scan(now, limit, 0, &mut page)),
+        Ok((3, Some(3)))
     );
-    assert_eq!(page.map(|suspect| suspect.peer), [0, 1, 2]);
-    let rest = roster.scan(now, limit, 3, &mut page);
-    assert_eq!(
-        rest,
-        Ok(Scan {
-            written: 1,
-            next: None,
-        })
-    );
-    assert_eq!(page[0].peer, 3);
+    assert_eq!(page.map(|suspect| suspect.peer()), [0, 1, 2]);
+    assert_eq!(shape(roster.scan(now, limit, 3, &mut page)), Ok((1, None)));
+    assert_eq!(page[0].peer(), 3);
 
-    let mut none: [Suspect; 0] = [];
-    assert_eq!(
-        roster.scan(now, limit, 0, &mut none),
-        Ok(Scan {
-            written: 0,
-            next: Some(0),
-        })
-    );
-    assert_eq!(
-        roster.scan(now, limit, 4, &mut none),
-        Ok(Scan {
-            written: 0,
-            next: None,
-        })
-    );
-    assert_eq!(
-        roster.scan(now, limit, 99, &mut all),
-        Ok(Scan {
-            written: 0,
-            next: None,
-        })
-    );
-    // A scan instant before a peer's last heartbeat lists nothing for it.
-    assert_eq!(
-        roster.scan(at(25), threshold(1e-9), 0, &mut all),
-        Ok(Scan {
-            written: 1,
-            next: None,
-        })
-    );
-    assert_eq!(all[0].peer, 0);
+    for (cursor, room, answer) in [(0, 0, (0, Some(0))), (4, 0, (0, None)), (99, 6, (0, None))] {
+        let out = &mut all[..room];
+        assert_eq!(shape(roster.scan(now, limit, cursor, out)), Ok(answer));
+    }
+    // Peers 1..4 last beat after 25 ns: skipped, not a refusal of the scan.
+    let early = roster.scan(at(25), threshold(1e-9), 0, &mut all);
+    assert_eq!(shape(early), Ok((1, None)));
+    assert_eq!(all[0].peer(), 0);
+    assert_eq!(roster.suspicion(1, at(25)), Err(Refusal::TimeRegression));
     assert_eq!(
         roster.scan(Duration::MAX, limit, 0, &mut all),
         Err(Refusal::Overflow)
@@ -232,14 +187,14 @@ fn roster_matches_naive_model_on_random_schedules() {
                 let mut page = [Suspect::default(); 2];
                 let scan = roster
                     .scan(at(probe), limit, position, &mut page)
-                    .unwrap_or_else(|refusal| panic!("{refusal:?}"));
+                    .expect("an instant that fits u64 nanoseconds");
                 found.extend(
-                    page.iter()
-                        .take(scan.written)
-                        .map(|suspect| (suspect.peer, suspect.incarnation, suspect.phi.value())),
+                    page.iter().take(scan.suspects()).map(|suspect| {
+                        (suspect.peer(), suspect.incarnation(), suspect.phi().value())
+                    }),
                 );
-                assert!(scan.next.is_none_or(|next| next > position));
-                cursor = scan.next;
+                assert!(scan.next().is_none_or(|next| next > position));
+                cursor = scan.next();
             }
             found.sort_by_key(|entry| entry.0);
             let mut expected_suspects: Vec<(u64, u64, f64)> = model

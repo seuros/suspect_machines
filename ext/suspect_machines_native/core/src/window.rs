@@ -2,7 +2,7 @@
 
 use core::time::Duration;
 
-use crate::{Beat, Config, Refusal, Statistics, Suspicion, math};
+use crate::{Beat, Config, Refusal, Statistics, Suspicion, duration_to_f64, half_range, math};
 
 /// Nanoseconds as `f64`. Exact up to `2^53` ns (about 104 days); beyond that
 /// the nearest representable value is used.
@@ -51,6 +51,14 @@ impl<const W: usize> Window<W> {
         }
     }
 
+    /// A window whose first heartbeat was at `now`: what [`Window::observe`]
+    /// makes of an empty window, without a refusal arm it could never take.
+    pub const fn started(now: u64) -> Self {
+        let mut window = Self::new();
+        window.last = Some(now);
+        window
+    }
+
     pub const fn len(&self) -> usize {
         self.len
     }
@@ -77,6 +85,9 @@ impl<const W: usize> Window<W> {
             return Err(Refusal::SameInstant);
         }
         let interval = now - last;
+        // `next < W` whenever `W > 0`, so the slot is missing only for a
+        // window of no slots, where an interval enters and leaves at once.
+        // No public type builds one: `Config::fit` refuses `W = 0`.
         if let Some(slot) = self.intervals.get_mut(self.next) {
             if self.len == W {
                 self.sum -= u128::from(*slot);
@@ -96,46 +107,51 @@ impl<const W: usize> Window<W> {
 
     /// Statistics of the stored intervals; `None` while there are none.
     pub fn statistics(&self) -> Option<Statistics> {
-        let stored = self.intervals.get(..self.len)?;
-        let (&first, _) = stored.split_first()?;
+        let stored = self.intervals.iter().take(self.len);
+        let &first = stored.clone().next()?;
+        let (mut min, mut max) = (first, first);
+        for &interval in stored.clone() {
+            min = min.min(interval);
+            max = max.max(interval);
+        }
+        let (min, max) = (Duration::from_nanos(min), Duration::from_nanos(max));
+        let (low, high) = (duration_to_f64(min), duration_to_f64(max));
         let count = count_to_f64(self.len);
-        let mean_ns = wide_to_f64(self.sum) / count;
+        // The exact mean lies within min..=max and the exact deviation within
+        // half the range; rounding may step past either bound, so clamp back
+        // to what the intervals can give.
+        let mean_ns = (wide_to_f64(self.sum) / count).max(low).min(high);
         let mut squares = 0.0;
-        let mut min = first;
-        let mut max = first;
         for &interval in stored {
             let deviation = to_f64(interval) - mean_ns;
             squares += deviation * deviation;
-            min = min.min(interval);
-            max = max.max(interval);
         }
         Some(Statistics {
             samples: self.len,
             mean_ns,
-            std_dev_ns: math::sqrt(squares / count),
-            min: Duration::from_nanos(min),
-            max: Duration::from_nanos(max),
+            std_dev_ns: math::sqrt(squares / count).min(half_range(low, high)),
+            min,
+            max,
         })
     }
 
-    /// The suspicion at `now` nanoseconds under `config`.
-    pub fn suspicion(&self, config: &Config, now: u64) -> Result<Suspicion, Refusal> {
+    /// The suspicion at `now` nanoseconds under `config`; `None` when `now`
+    /// precedes the last heartbeat, so there is no silence to measure. The
+    /// callers answer that as [`Refusal::TimeRegression`] or skip the peer.
+    pub fn suspicion(&self, config: &Config, now: u64) -> Option<Suspicion> {
         let Some(last) = self.last else {
-            return Ok(Suspicion::NoHeartbeat);
+            return Some(Suspicion::NoHeartbeat);
         };
-        if now < last {
-            return Err(Refusal::TimeRegression);
-        }
-        let silence = now - last;
-        match self.statistics() {
+        let silence = now.checked_sub(last)?;
+        Some(match self.statistics() {
             Some(statistics) if self.len >= config.min_samples() => {
-                Ok(Suspicion::Measured(config.phi(&statistics, silence)))
+                Suspicion::Measured(config.phi(&statistics, silence))
             }
-            Some(_) | None => Ok(Suspicion::WarmingUp {
+            Some(_) | None => Suspicion::WarmingUp {
                 samples: self.len,
                 required: config.min_samples(),
                 silence: Duration::from_nanos(silence),
-            }),
-        }
+            },
+        })
     }
 }

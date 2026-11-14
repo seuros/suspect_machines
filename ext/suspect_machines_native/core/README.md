@@ -14,9 +14,11 @@ number. Asked at an explicit instant, either one answers with
 
 Everything the detector assumes is stated by the caller:
 
-- **Distribution.** `Distribution::Normal { min_std_dev }` uses the window mean
-  and standard deviation, floored at `min_std_dev`. `Distribution::Exponential`
-  uses only the mean. Neither is verified against the data.
+- **Distribution.** `Distribution::Normal(Normal::new(min_std_dev)?)` uses the
+  window mean and standard deviation, floored at `min_std_dev` (`Normal::new`
+  refuses a zero floor with `ConfigError::ZeroDeviationFloor`).
+  `Distribution::Exponential` uses only the mean. Neither is verified against
+  the data.
 - **Warm-up.** `Config::new(distribution, min_samples)`: until `min_samples`
   intervals are in the window, the answer is `Suspicion::WarmingUp` with the
   current silence, never a phi computed from too little data.
@@ -31,14 +33,34 @@ oldest interval; a full roster answers `Refusal::Full` and never evicts a peer.
 A heartbeat with an older incarnation is `Refusal::Stale`; a newer one discards
 the peer's statistics and starts a new warm-up. `Roster::scan` writes peers at
 or above a threshold into a caller buffer and returns a cursor when it runs out
-of room. `Roster::forget` never refuses: it answers `Forgetting::Forgotten`, or
+of room; a peer whose last heartbeat is later than the scan instant has no
+silence to measure and is skipped, not refused (`Roster::suspicion` refuses it
+with `TimeRegression`). `Roster::forget` never refuses: it answers `Forgetting::Forgotten`, or
 `Forgetting::NotTracked` for the idempotent repeat that changed nothing.
 
+Every value has a validating constructor, its fields are private behind
+readers, and every answer passes it: `Normal::new` (a floor of `1 ns` to
+`u64::MAX` ns), `Phi::new` (finite, not negative), `Threshold::new` (finite,
+above zero),
+`Beat::recorded::<W>` (a non-zero interval, `1..=W` samples),
+`Suspicion::warming_up::<W>` (`samples < required <= W`),
+`Statistics::new::<W>` (`1..=W` samples, `1 ns <= min <= max` with one
+sample its own min and max, a mean within `min..=max`, a positively signed
+deviation of at most `(max - min) / 2`), `Suspect::new` (any peer and incarnation)
+and `Scan::new::<P>` (at most `P` suspects, a resume cursor below `P`). Each
+answers `None` (or the `ConfigError`) for anything else.
+
+Clock: every honoured heartbeat (`First`, `Recorded`, `Restarted`) records
+`now` as the last heartbeat; it is the observation itself, and there is no
+honoured repeat. `suspicion` and `scan` take `&self` and record nothing.
+
 The Ruby gem passes and answers every `Duration` as Integer nanoseconds and
-mirrors `Distribution::Normal`, `Config`, `Beat::Recorded`,
+mirrors `Phi`, `Threshold`, `Normal`, `Config`, `Beat::Recorded`,
 `Suspicion::WarmingUp`, `Suspicion::Measured`, `Statistics`, `Suspect` and
-`Scan` as `Data` values with the same fields (its `Scan` carries the suspects
-where this one counts `written`). Unit variants are symbols.
+`Scan` as `Data` values with the same fields (its `Scan#suspects` holds the
+suspects themselves where `Scan::suspects` counts those written to `out`),
+each checked through the constructors above
+when built. Unit variants are symbols.
 
 Phi is advisory. It describes arrival statistics under an assumed
 distribution. It is not a verdict that a peer is dead, it does not revoke a
@@ -47,10 +69,10 @@ resource-side fencing.
 
 ```rust
 use core::time::Duration;
-use suspect_machines::{Beat, Config, Detector, Distribution, Suspicion, Threshold};
+use suspect_machines::{Beat, Config, Detector, Distribution, Normal, Suspicion, Threshold};
 
-let normal = Distribution::Normal { min_std_dev: Duration::from_millis(100) };
-let config = Config::new(normal, 3).expect("valid policy");
+let normal = Normal::new(Duration::from_millis(100)).expect("a non-zero floor");
+let config = Config::new(Distribution::Normal(normal), 3).expect("valid policy");
 let mut detector = Detector::<16>::new(config).expect("warm-up fits the window");
 
 assert_eq!(detector.heartbeat(Duration::from_secs(0)), Ok(Beat::First));

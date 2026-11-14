@@ -13,8 +13,10 @@ class RosterTest < Minitest::Test
   Config = SuspectMachines::Config
 
   def test_values_mirror_the_core
-    names = %i[Normal Config Recorded WarmingUp Measured Statistics Suspect Scan]
+    names = %i[Phi Threshold Normal Config Recorded WarmingUp Measured Statistics Suspect Scan]
     names.each { assert_operator SuspectMachines.const_get(_1), :<, Data }
+    assert_equal %i[value], SuspectMachines::Phi.members
+    assert_equal %i[value], SuspectMachines::Threshold.members
     assert_equal %i[min_std_dev], Normal.members
     assert_equal %i[distribution min_samples acceptable_pause], Config.members
     assert_equal %i[interval samples], Recorded.members
@@ -34,7 +36,8 @@ class RosterTest < Minitest::Test
     SuspectMachines::Roster.new(config)
   end
 
-  def phi(roster, peer, now) = roster.suspicion(peer, now).phi
+  def phi(roster, peer, now) = roster.suspicion(peer, now).phi.value
+  def level(value) = SuspectMachines::Threshold.new(value)
 
   def test_warm_up_then_phi_under_the_normal_assumption
     roster = normal
@@ -63,7 +66,7 @@ class RosterTest < Minitest::Test
     end
     assert_in_delta 3 / Math.log(10), phi(roster, 1, 50), 1e-12
     assert_in_delta 3 / Math.log(10), phi(lenient, 1, 55), 1e-12
-    assert_equal Measured.new(0.0), lenient.suspicion(1, 24)
+    assert_equal Measured.new(SuspectMachines::Phi.new(0.0)), lenient.suspicion(1, 24)
     assert_equal [5, 0], [lenient.config.acceptable_pause, roster.config.acceptable_pause]
   end
 
@@ -131,23 +134,23 @@ class RosterTest < Minitest::Test
     end
     roster.heartbeat(5, 0, 0)
     roster.heartbeat(5, 0, 10) # one interval: still warming up
-    scan = roster.scan(120, 3.0, 0, 64)
+    scan = roster.scan(120, level(3.0), 0, 64)
     assert_instance_of SuspectMachines::Scan, scan
     assert_nil scan.next
     assert_equal [0, 1, 2, 3], scan.suspects.map(&:peer)
     assert_equal [0, 1, 2, 3], scan.suspects.map(&:incarnation)
-    assert_in_delta 10 / Math.log(10), scan.suspects.first.phi, 1e-12
+    assert_in_delta 10 / Math.log(10), scan.suspects.first.phi.value, 1e-12
     assert_instance_of SuspectMachines::Suspect, scan.suspects.first
 
-    page = roster.scan(120, 3, 0, 3)
+    page = roster.scan(120, level(3), 0, 3)
     assert_equal [[0, 1, 2], 3], [page.suspects.map(&:peer), page.next]
-    rest = roster.scan(120, 3, page.next, 3)
+    rest = roster.scan(120, level(3), page.next, 3)
     assert_equal [[3], nil], [rest.suspects.map(&:peer), rest.next]
-    assert_equal [[], 0], roster.scan(120, 3, 0, 0).then { [it.suspects, it.next] }
-    assert_equal [[], nil], roster.scan(120, 3, 10_000, 64).then { [it.suspects, it.next] }
-    assert_empty roster.scan(120, 1e6, 0, 64).suspects
-    assert roster.scan(120, 3, 0, 64).frozen?
-    assert roster.scan(120, 3, 0, 64).suspects.frozen?
+    assert_equal [[], 0], roster.scan(120, level(3), 0, 0).then { [it.suspects, it.next] }
+    assert_equal [[], nil], roster.scan(120, level(3), 10_000, 64).then { [it.suspects, it.next] }
+    assert_empty roster.scan(120, level(1e6), 0, 64).suspects
+    assert roster.scan(120, level(3), 0, 64).frozen?
+    assert roster.scan(120, level(3), 0, 64).suspects.frozen?
   end
 
   def test_strict_inputs_raise_before_mutation
@@ -163,13 +166,12 @@ class RosterTest < Minitest::Test
       assert_raises(TypeError) { roster.incarnation(value) }
       assert_raises(TypeError) { roster.last_heartbeat(value) }
       assert_raises(TypeError) { roster.forget(value) }
-      assert_raises(TypeError) { roster.scan(value, 1.0, 0, 64) }
-      assert_raises(TypeError) { roster.scan(0, 1.0, value, 64) }
-      assert_raises(TypeError) { roster.scan(0, 1.0, 0, value) }
+      assert_raises(TypeError) { roster.scan(value, level(1.0), 0, 64) }
+      assert_raises(TypeError) { roster.scan(0, level(1.0), value, 64) }
+      assert_raises(TypeError) { roster.scan(0, level(1.0), 0, value) }
     end
-    [nil, '8', Object.new, :high].each { |value| assert_raises(TypeError) { roster.scan(0, value, 0, 64) } }
-    [0, -1, 0.0, Float::NAN, Float::INFINITY].each do |value|
-      assert_raises(RangeError) { roster.scan(0, value, 0, 64) }
+    [nil, '8', Object.new, :high, 1.0, 3, SuspectMachines::Phi.new(1)].each do |value|
+      assert_raises(TypeError) { roster.scan(0, value, 0, 64) }
     end
     assert_raises(ArgumentError) { roster.scan(0, 1.0) }
     assert_raises(NoMethodError) { roster.suspects(0, 1.0) }
@@ -177,9 +179,9 @@ class RosterTest < Minitest::Test
       assert_raises(RangeError) { roster.heartbeat(n, 0, 0) }
       assert_raises(RangeError) { roster.heartbeat(1, n, 0) }
       assert_raises(RangeError) { roster.heartbeat(1, 0, n) }
-      assert_raises(RangeError) { roster.scan(n, 1.0, 0, 64) }
+      assert_raises(RangeError) { roster.scan(n, level(1.0), 0, 64) }
     end
-    assert_raises(RangeError) { roster.scan(0, 1.0, 0, 65) }
+    assert_raises(RangeError) { roster.scan(0, level(1.0), 0, 65) }
     assert_equal 0, roster.size
   end
 
@@ -195,17 +197,12 @@ class RosterTest < Minitest::Test
     assert_raises(ArgumentError) { Config.new(:exponential) }
     assert_raises(ArgumentError) { Config.new(:exponential, 1, 5) }
     assert_raises(ArgumentError) { Config.new(distribution: :exponential, min_samples: 1) }
-    assert_raises(ArgumentError) { Config.new(:weibull, 3) }
-    assert_raises(ArgumentError) { Config.new(:normal, 3) }
+    assert_raises(RangeError) { Config.new(:weibull, 3) }
+    assert_raises(RangeError) { Config.new(:normal, 3) }
     assert_raises(TypeError) { Config.new('normal', 3) }
     assert_raises(TypeError) { Config.new(nil, 3) }
     assert_raises(TypeError) { Config.new(:exponential, 3.0) }
-    assert_raises(TypeError) { Normal.new(1.5) }
-    assert_raises(TypeError) { Normal.new(nil) }
-    assert_raises(RangeError) { Normal.new(-1) }
-    assert_raises(RangeError) { Normal.new(2**64) }
     assert_raises(RangeError) { Config.new(:exponential, 0) }
-    assert_raises(RangeError) { Config.new(Normal.new(0), 3) }
     assert_raises(TypeError) { config.with_acceptable_pause(nil) }
     assert_raises(TypeError) { config.with_acceptable_pause(1.5) }
     assert_raises(RangeError) { config.with_acceptable_pause(2**64) }
@@ -230,7 +227,7 @@ class RosterTest < Minitest::Test
     assert_raises(FrozenError) { roster.heartbeat(1, 0, 20) }
     assert_raises(FrozenError) { roster.forget(1) }
     assert_in_delta 1 / Math.log(10), phi(roster, 1, 20), 1e-12
-    assert_equal [1], roster.scan(20, 0.1, 0, 64).suspects.map(&:peer)
+    assert_equal [1], roster.scan(20, level(0.1), 0, 64).suspects.map(&:peer)
     assert_equal 1, roster.statistics(1).samples
     assert_equal [1, 0, 10], [roster.size, roster.incarnation(1), roster.last_heartbeat(1)]
   end
@@ -245,7 +242,7 @@ class RosterTest < Minitest::Test
     level = phi(roster, max, max)
     assert level.finite?
     assert_operator level, :>, 1e37
-    suspect = roster.scan(max, 1e30, 0, 64).suspects.fetch(0)
+    suspect = roster.scan(max, level(1e30), 0, 64).suspects.fetch(0)
     assert_equal [max, max], [suspect.peer, suspect.incarnation]
     assert_equal Recorded.new(max - 1, 2), roster.heartbeat(max, max, max)
     assert_equal max - 1, roster.statistics(max).max

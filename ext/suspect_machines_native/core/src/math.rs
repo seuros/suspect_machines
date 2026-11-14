@@ -43,19 +43,49 @@ const LN_TERMS: u32 = 13;
 const LN_2_HIGH: f64 = 6.931_471_803_691_238e-1;
 /// `ln(2) - LN_2_HIGH`.
 const LN_2_LOW: f64 = 1.908_214_929_270_587_7e-10;
+/// The 52 stored mantissa bits of an `f64`.
 const MANTISSA_MASK: u64 = 0x000F_FFFF_FFFF_FFFF;
+/// Width of the stored mantissa: the exponent field starts above it.
+const MANTISSA_BITS: u32 = 52;
+/// Bits of `1.0`: biased exponent zero, empty mantissa.
 const ONE_BITS: u64 = 0x3FF0_0000_0000_0000;
-/// `2^54`, lifting subnormals into the normal range.
+/// IEEE-754 double exponent bias.
+const EXPONENT_BIAS: i32 = 1023;
+/// Power of two that lifts every subnormal into the normal range.
+const LIFT: i32 = 54;
+/// `2^LIFT`.
 const TWO_54: f64 = 18_014_398_509_481_984.0;
+/// Below this `e^x` underflows to zero (`e^-708` is the last normal result).
+const EXP_FLOOR: f64 = -708.0;
+/// Above this `e^x` overflows to infinity.
+const EXP_CEILING: f64 = 709.0;
 
-/// Biased exponent field of `bits`, as a signed integer.
+/// Biased exponent field of `bits` (bits 52 to 62), as a signed integer.
 fn exponent_field(bits: u64) -> i32 {
-    i32::try_from((bits >> 52) & 0x7FF).unwrap_or(0)
+    let [.., low, high] = bits.to_le_bytes();
+    i32::from((u16::from(high & 0x7F) << 4) | u16::from(low >> 4))
 }
 
-/// `2^power` for `-1022 <= power <= 1023`.
+/// `2^power` for `-1022 <= power <= 1023`, the only powers the callers form.
 fn power_of_two(power: i32) -> f64 {
-    f64::from_bits(u64::try_from(power + 1023).unwrap_or(0) << 52)
+    debug_assert!(
+        (1 - EXPONENT_BIAS..=EXPONENT_BIAS).contains(&power),
+        "callers form only normal powers of two"
+    );
+    f64::from_bits(u64::from((power + EXPONENT_BIAS).cast_unsigned()) << MANTISSA_BITS)
+}
+
+/// `(exponent, mantissa)` with `x = mantissa * 2^exponent` and `mantissa` in
+/// `[1, 2)`, for a finite positive `x`, subnormals included.
+fn decompose(x: f64) -> (i32, f64) {
+    let (scaled, lift) = if x < f64::MIN_POSITIVE {
+        (x * TWO_54, LIFT)
+    } else {
+        (x, 0)
+    };
+    let bits = scaled.to_bits();
+    let mantissa = f64::from_bits((bits & MANTISSA_MASK) | ONE_BITS);
+    (exponent_field(bits) - EXPONENT_BIAS - lift, mantissa)
 }
 
 /// Square root of a finite non-negative `x`; zero for anything else.
@@ -63,14 +93,7 @@ pub fn sqrt(x: f64) -> f64 {
     if x.is_nan() || x <= 0.0 || x.is_infinite() {
         return 0.0;
     }
-    let (scaled, lift) = if x < f64::MIN_POSITIVE {
-        (x * TWO_54 * TWO_54, -54)
-    } else {
-        (x, 0)
-    };
-    let bits = scaled.to_bits();
-    let mut exponent = exponent_field(bits) - 1023;
-    let mut mantissa = f64::from_bits((bits & MANTISSA_MASK) | ONE_BITS);
+    let (mut exponent, mut mantissa) = decompose(x);
     if exponent % 2 != 0 {
         mantissa *= 2.0;
         exponent -= 1;
@@ -81,18 +104,19 @@ pub fn sqrt(x: f64) -> f64 {
         root = 0.5 * (root + mantissa / root);
         step += 1;
     }
-    root * power_of_two(exponent / 2 + lift)
+    root * power_of_two(exponent / 2)
 }
 
-/// `e^x`, saturating to zero below `-708` and to infinity above `709`.
+/// `e^x`, saturating to zero below [`EXP_FLOOR`] and to infinity above
+/// [`EXP_CEILING`].
 pub fn exp(x: f64) -> f64 {
     if x.is_nan() {
         return x;
     }
-    if x < -708.0 {
+    if x < EXP_FLOOR {
         return 0.0;
     }
-    if x > 709.0 {
+    if x > EXP_CEILING {
         return f64::INFINITY;
     }
     let turns = x / LN_2;
@@ -129,14 +153,8 @@ pub fn ln(x: f64) -> f64 {
     if x <= 0.0 {
         return f64::NEG_INFINITY;
     }
-    let (scaled, lift) = if x < f64::MIN_POSITIVE {
-        (x * TWO_54, -54.0)
-    } else {
-        (x, 0.0)
-    };
-    let bits = scaled.to_bits();
-    let mut exponent = f64::from(exponent_field(bits) - 1023) + lift;
-    let mut mantissa = f64::from_bits((bits & MANTISSA_MASK) | ONE_BITS);
+    let (power, mut mantissa) = decompose(x);
+    let mut exponent = f64::from(power);
     if mantissa > core::f64::consts::SQRT_2 {
         mantissa *= 0.5;
         exponent += 1.0;

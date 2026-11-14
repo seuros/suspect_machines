@@ -1,23 +1,24 @@
 //! Private native entry point.
-use magnus::{Error, Ruby, Value, function, method, prelude::*};
+use magnus::{Error, Ruby, function, method, prelude::*};
 
-use crate::{CAPACITY, Number, WINDOW, convert, data, detector::Detector, roster::Roster};
-
-/// `Normal#__validate`: the floor is `u64` nanoseconds. Whether it is usable
-/// is `Config`'s to say, as in the core.
-fn validate_normal(this: Value) -> Result<(), Error> {
-    this.funcall::<_, _, Number>("min_std_dev", ()).map(|_| ())
-}
-
-fn validate_config(ruby: &Ruby, this: Value) -> Result<(), Error> {
-    convert::config(ruby, this).map(|_| ())
-}
+use crate::{CAPACITY, WINDOW, classes, detector::Detector, roster::Roster, values};
 
 #[magnus::init]
 fn init(ruby: &Ruby) -> Result<(), Error> {
     let module = ruby.define_module("SuspectMachines")?;
-    data(ruby, "Normal")?.define_private_method("__validate", method!(validate_normal, 0))?;
-    data(ruby, "Config")?.define_private_method("__validate", method!(validate_config, 0))?;
+    module.define_singleton_method("__phi", function!(values::phi_level, 1))?;
+    module.define_singleton_method("__threshold", function!(values::threshold_level, 1))?;
+    module.define_singleton_method("__normal", function!(values::normal, 1))?;
+    module.define_singleton_method("__config", function!(values::config, 3))?;
+    module.define_singleton_method("__recorded", function!(values::recorded, 2))?;
+    module.define_singleton_method("__warming_up", function!(values::warming_up, 3))?;
+    module.define_singleton_method("__measured", function!(values::measured, 1))?;
+    module.define_singleton_method("__statistics", function!(values::statistics, 5))?;
+    module.define_singleton_method("__suspect", function!(values::suspect, 3))?;
+    module.define_singleton_method("__scan", function!(values::scan, 2))?;
+    let phi = ruby.get_inner(classes::resolve(ruby, module)?.phi);
+    phi.define_method("millis", method!(values::millis, 0))?;
+    phi.define_method("reaches?", method!(values::reaches, 1))?;
 
     let class = module.define_class("Detector", ruby.class_object())?;
     class.undef_default_alloc_func();

@@ -32,7 +32,8 @@ class DetectorTest < Minitest::Test
     measured = detector.suspicion(4 * SECOND + 300 * MILLI)
     assert_instance_of Measured, measured
     assert_predicate measured, :frozen?
-    assert_in_delta 2.869699035929369, measured.phi, 1e-9
+    assert_in_delta 2.869699035929369, measured.phi.value, 1e-9
+    assert_equal 2_869, measured.phi.millis
     stats = detector.statistics
     assert_equal [3, 1e9, 0.0, SECOND, SECOND], [stats.samples, stats.mean_ns, stats.std_dev_ns, stats.min, stats.max]
   end
@@ -46,7 +47,7 @@ class DetectorTest < Minitest::Test
     assert_equal :time_regression, detector.heartbeat(199)
     assert_equal :time_regression, detector.suspicion(199)
     assert_equal before, [detector.samples, detector.last_heartbeat, detector.statistics]
-    assert_in_delta 1 / Math.log(10), detector.suspicion(300).phi, 1e-12
+    assert_in_delta 1 / Math.log(10), detector.suspicion(300).phi.value, 1e-12
   end
 
   def test_reset_starts_the_warm_up_over
@@ -94,7 +95,7 @@ class DetectorTest < Minitest::Test
     detector.freeze
     assert_raises(FrozenError) { detector.heartbeat(20) }
     assert_raises(FrozenError) { detector.reset }
-    assert_in_delta 1 / Math.log(10), detector.suspicion(20).phi, 1e-12
+    assert_in_delta 1 / Math.log(10), detector.suspicion(20).phi.value, 1e-12
     assert_equal [1, 10], [detector.samples, detector.last_heartbeat]
   end
 end

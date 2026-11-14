@@ -5,7 +5,7 @@
 use core::time::Duration;
 use std::vec::Vec;
 
-use crate::{Beat, Config, Detector, Distribution, Refusal, Roster, Suspicion, Threshold};
+use crate::{Beat, Config, Detector, Distribution, Normal, Refusal, Roster, Suspicion, Threshold};
 
 pub const SECOND: u64 = 1_000_000_000;
 pub const MILLI: u64 = 1_000_000;
@@ -15,26 +15,24 @@ pub fn at(nanoseconds: u64) -> Duration {
 }
 
 pub fn normal(floor_ns: u64, min_samples: usize) -> Config {
-    let distribution = Distribution::Normal {
-        min_std_dev: at(floor_ns),
-    };
-    Config::new(distribution, min_samples).unwrap_or_else(|error| panic!("{error:?}"))
+    let floor = Normal::new(at(floor_ns)).expect("a non-zero floor");
+    Config::new(Distribution::Normal(floor), min_samples).expect("a non-zero warm-up")
 }
 
 pub fn exponential(min_samples: usize) -> Config {
-    Config::new(Distribution::Exponential, min_samples).unwrap_or_else(|error| panic!("{error:?}"))
+    Config::new(Distribution::Exponential, min_samples).expect("a non-zero warm-up")
 }
 
 pub fn detector<const W: usize>(config: Config) -> Detector<W> {
-    Detector::new(config).unwrap_or_else(|error| panic!("{error:?}"))
+    Detector::new(config).expect("a config that fits the window")
 }
 
 pub fn roster<const P: usize, const W: usize>(config: Config) -> Roster<P, W> {
-    Roster::new(config).unwrap_or_else(|error| panic!("{error:?}"))
+    Roster::new(config).expect("a config that fits the window")
 }
 
 pub fn threshold(phi: f64) -> Threshold {
-    Threshold::new(phi).unwrap_or_else(|| panic!("bad threshold {phi}"))
+    Threshold::new(phi).expect("a positive finite threshold")
 }
 
 pub fn measured(suspicion: Result<Suspicion, Refusal>) -> f64 {
@@ -44,9 +42,15 @@ pub fn measured(suspicion: Result<Suspicion, Refusal>) -> f64 {
     phi.value()
 }
 
-pub fn close(actual: f64, expected: f64, tolerance: f64) -> bool {
+/// `|actual - expected|` within `absolute` or within `relative * |expected|`.
+pub fn within(actual: f64, expected: f64, absolute: f64, relative: f64) -> bool {
     let error = (actual - expected).abs();
-    error <= tolerance || error <= tolerance * expected.abs()
+    error <= absolute || error <= relative * expected.abs()
+}
+
+/// [`within`] with one tolerance, absolute and relative.
+pub fn close(actual: f64, expected: f64, tolerance: f64) -> bool {
+    within(actual, expected, tolerance, tolerance)
 }
 
 /// Deterministic xorshift64* generator for the randomized tests.
@@ -163,8 +167,8 @@ impl Model {
         let silence = (now - last) as f64;
         let pause = config.acceptable_pause().as_nanos() as f64;
         Expected::Phi(match config.distribution() {
-            Distribution::Normal { min_std_dev } => {
-                let deviation = self.std_dev().max(min_std_dev.as_nanos() as f64);
+            Distribution::Normal(floor) => {
+                let deviation = self.std_dev().max(floor.min_std_dev().as_nanos() as f64);
                 reference_normal_phi((silence - self.mean() - pause) / deviation)
             }
             Distribution::Exponential => {
@@ -183,7 +187,7 @@ pub fn random_config(rng: &mut Rng, window: usize) -> Config {
     };
     config
         .with_acceptable_pause(at(rng.below(3) * rng.below(200 * MILLI)))
-        .unwrap_or_else(|error| panic!("{error:?}"))
+        .expect("a pause that fits u64 nanoseconds")
 }
 
 /// A step that is usually a plausible heartbeat gap, sometimes zero.

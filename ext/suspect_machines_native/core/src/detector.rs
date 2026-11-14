@@ -2,7 +2,7 @@
 
 use core::time::Duration;
 
-use crate::{Beat, Config, ConfigError, Refusal, Statistics, Suspicion, nanos, window::Window};
+use crate::{Beat, Config, ConfigError, Refusal, Statistics, Suspicion, instant, window::Window};
 
 /// Heartbeat statistics and suspicion for one peer over the last `W`
 /// intervals.
@@ -41,7 +41,7 @@ impl<const W: usize> Detector<W> {
     /// [`Refusal::Overflow`], [`Refusal::TimeRegression`] or
     /// [`Refusal::SameInstant`]; the detector is unchanged.
     pub fn heartbeat(&mut self, now: Duration) -> Result<Beat, Refusal> {
-        self.window.observe(nanos(now).ok_or(Refusal::Overflow)?)
+        self.window.observe(instant(now)?)
     }
 
     /// The suspicion at `now`. Reading never changes the detector.
@@ -52,7 +52,8 @@ impl<const W: usize> Detector<W> {
     /// precedes the last heartbeat.
     pub fn suspicion(&self, now: Duration) -> Result<Suspicion, Refusal> {
         self.window
-            .suspicion(&self.config, nanos(now).ok_or(Refusal::Overflow)?)
+            .suspicion(&self.config, instant(now)?)
+            .ok_or(Refusal::TimeRegression)
     }
 
     /// Statistics of the stored intervals; `None` while there are none.
