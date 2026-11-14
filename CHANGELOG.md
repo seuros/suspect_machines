@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0](https://github.com/seuros/suspect_machines/compare/suspect_machines/v0.2.0...suspect_machines/v0.3.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* core-validated sealed values, private Normal/Statistics/Suspect/Scan fields, Scan#suspects, clone-then-keep heartbeat
+
+### Features
+
+* core-validated sealed values, private Normal/Statistics/Suspect/Scan fields, Scan#suspects, clone-then-keep heartbeat ([e155c5f](https://github.com/seuros/suspect_machines/commit/e155c5f59aa257252775378d9763bd676a669ed9))
+
 ## [0.2.0](https://github.com/seuros/suspect_machines/compare/suspect_machines/v0.1.1...suspect_machines/v0.2.0) (2026-11-13)
 
 
