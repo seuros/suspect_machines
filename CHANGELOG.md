@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/seuros/suspect_machines/compare/suspect_machines/v0.4.0...suspect_machines/v0.5.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* adopt matryona 0.3 finite levels and integer_in scan limit
+
+### Features
+
+* adopt matryona 0.3 finite levels and integer_in scan limit ([0fb9975](https://github.com/seuros/suspect_machines/commit/0fb99759bf583910441742d8237954bed50213f2))
+
 ## [0.4.0](https://github.com/seuros/suspect_machines/compare/suspect_machines/v0.3.0...suspect_machines/v0.4.0) (2026-11-14)
 
 
