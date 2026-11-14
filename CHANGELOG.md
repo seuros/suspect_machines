@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/seuros/suspect_machines/compare/suspect_machines/v0.5.0...suspect_machines/v0.5.1) (2026-11-14)
+
+
+### Bug Fixes
+
+* **deps:** require matryona-machines &gt;= 0.4 and read distributions through a names_only table ([2271642](https://github.com/seuros/suspect_machines/commit/2271642bd00feeaaaf43aee6e2c045ef283f1dc1))
+
 ## [0.5.0](https://github.com/seuros/suspect_machines/compare/suspect_machines/v0.4.0...suspect_machines/v0.5.0) (2026-11-14)
 
 
