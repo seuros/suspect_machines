@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.0](https://github.com/seuros/suspect_machines/compare/suspect_machines/v0.3.0...suspect_machines/v0.4.0) (2026-11-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* adopt matryona-machines 0.2: exact readers, symbols! tables, struct-only field reads
+
+### Features
+
+* adopt matryona-machines 0.2: exact readers, symbols! tables, struct-only field reads ([180ab6b](https://github.com/seuros/suspect_machines/commit/180ab6bd465bf6b05cf076c732d036a0ef26045c))
+
 ## [0.3.0](https://github.com/seuros/suspect_machines/compare/suspect_machines/v0.2.0...suspect_machines/v0.3.0) (2026-11-14)
 
 
