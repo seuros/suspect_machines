@@ -181,7 +181,10 @@ class RosterTest < Minitest::Test
       assert_raises(RangeError) { roster.heartbeat(1, 0, n) }
       assert_raises(RangeError) { roster.scan(n, level(1.0), 0, 64) }
     end
-    assert_raises(RangeError) { roster.scan(0, level(1.0), 0, 65) }
+    [65, -1, 2**64].each do |limit|
+      error = assert_raises(RangeError) { roster.scan(0, level(1.0), 0, limit) }
+      assert_equal 'limit must be in 0..=64', error.message
+    end
     assert_equal 0, roster.size
   end
 

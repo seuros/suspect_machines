@@ -4,22 +4,20 @@
 use std::time::Duration;
 
 use magnus::{Error, RArray, Ruby, Value, prelude::*};
-use matryona_machines::ruby::{exact_array, exact_fields, integer, optional};
+use matryona_machines::ruby::{exact_array, exact_fields, finite, integer, optional};
 use suspect_machines::{Beat, Scan, Statistics, Suspicion};
 
 use crate::classes::classes;
-use crate::{
-    CAPACITY, WINDOW, convert, phi, phi_from, range_error, real, threshold, threshold_from,
-};
+use crate::{CAPACITY, WINDOW, convert, phi, phi_from, range_error, threshold, threshold_from};
 
 /// `Phi.new`: the level as a Float the core's `Phi::new` accepts.
 pub fn phi_level(ruby: &Ruby, value: Value) -> Result<f64, Error> {
-    phi(ruby, real(value, "phi must be a Float or Integer")?).map(suspect_machines::Phi::value)
+    phi(ruby, finite(value, "phi")?).map(suspect_machines::Phi::value)
 }
 
 /// `Threshold.new`: the level as a Float the core's `Threshold::new` accepts.
 pub fn threshold_level(ruby: &Ruby, value: Value) -> Result<f64, Error> {
-    let level = real(value, "threshold must be a Float or Integer")?;
+    let level = finite(value, "threshold")?;
     threshold(ruby, level).map(suspect_machines::Threshold::value)
 }
 
@@ -98,8 +96,8 @@ pub fn statistics(
     max: Value,
 ) -> Result<(usize, f64, f64, u64, u64), Error> {
     let samples = integer(samples, "samples")?;
-    let mean = real(mean_ns, "mean_ns must be a Float or Integer")?;
-    let spread = real(std_dev_ns, "std_dev_ns must be a Float or Integer")?;
+    let mean = finite(mean_ns, "mean_ns")?;
+    let spread = finite(std_dev_ns, "std_dev_ns")?;
     let (min, max): (u64, u64) = (integer(min, "min")?, integer(max, "max")?);
     let (low, high) = (Duration::from_nanos(min), Duration::from_nanos(max));
     Statistics::new::<WINDOW>(samples, mean, spread, low, high)

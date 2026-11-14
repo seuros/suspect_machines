@@ -2,7 +2,7 @@
 use std::cell::RefCell;
 
 use magnus::{Error, Integer, Ruby, Symbol, Value, prelude::*, typed_data::Obj};
-use matryona_machines::ruby::{Symbols, duration, integer, keep, nanoseconds};
+use matryona_machines::ruby::{Symbols, duration, integer, integer_in, keep, nanoseconds};
 use suspect_machines::{Forgetting, Roster as Core, Suspect};
 
 use crate::classes::classes;
@@ -64,18 +64,13 @@ impl Roster {
         limit: Value,
     ) -> Result<Value, Error> {
         let now = duration(now, "now")?;
-        let (cursor, limit): (usize, usize) =
-            (integer(cursor, "cursor")?, integer(limit, "limit")?);
+        let cursor: usize = integer(cursor, "cursor")?;
+        let limit = integer_in(limit, "limit", 0..=CAPACITY)?;
         let threshold = threshold_from(ruby, threshold)?;
         let classes = classes(ruby)?;
         let (suspect, scan_class) = (classes.suspect.get(ruby), classes.scan.get(ruby));
         let mut buffer = [Suspect::default(); CAPACITY];
-        let out = buffer.get_mut(..limit).ok_or_else(|| {
-            Error::new(
-                ruby.exception_range_error(),
-                "limit exceeds the compiled capacity",
-            )
-        })?;
+        let out = buffer.get_mut(..limit).unwrap_or(&mut []);
         let outcome = this.core.borrow().scan(now, threshold, cursor, out);
         let scan = match outcome {
             Ok(scan) => scan,

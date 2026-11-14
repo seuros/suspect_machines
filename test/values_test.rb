@@ -28,6 +28,38 @@ class ValuesTest < Minitest::Test
     assert_raises(RangeError) { phi(1).with(value: -1) }
   end
 
+  # Levels are exactly a Float or an Integer, read natively: a Rational or
+  # an object answering to_f is TypeError, no to_f runs (a redefined
+  # Integer#to_f included), and a non-finite level is RangeError before
+  # the core sees it, an Integer past Float::MAX included.
+  def test_levels_are_finite_floats_or_integers_read_natively
+    to_f = Object.new.tap { |object| def object.to_f = 1.0 }
+    [1r, to_f, Complex(1, 0)].each do |bad|
+      error = assert_raises(TypeError) { phi(bad) }
+      assert_equal 'phi must be a Float or Integer', error.message
+      error = assert_raises(TypeError) { Threshold.new(bad) }
+      assert_equal 'threshold must be a Float or Integer', error.message
+      error = assert_raises(TypeError) { Statistics.new(1, bad, 0, 1, 1) }
+      assert_equal 'mean_ns must be a Float or Integer', error.message
+      error = assert_raises(TypeError) { Statistics.new(1, 1, bad, 1, 1) }
+      assert_equal 'std_dev_ns must be a Float or Integer', error.message
+    end
+    [Float::NAN, Float::INFINITY, -Float::INFINITY, 2**1024].each do |bad|
+      assert_equal 'phi must be finite', assert_raises(RangeError) { phi(bad) }.message
+      assert_equal 'threshold must be finite', assert_raises(RangeError) { Threshold.new(bad) }.message
+      assert_equal 'mean_ns must be finite', assert_raises(RangeError) { Statistics.new(1, bad, 0, 1, 1) }.message
+      assert_equal 'std_dev_ns must be finite', assert_raises(RangeError) { Statistics.new(1, 1, bad, 1, 1) }.message
+    end
+    Integer.alias_method(:__real_to_f, :to_f)
+    Integer.define_method(:to_f) { raise 'Integer#to_f called' }
+    assert_equal 3.0, phi(3).value
+    assert_equal 2.0, Threshold.new(2).value
+    assert_equal [15.0, 5.0], Statistics.new(2, 15, 5, 10, 20).then { [it.mean_ns, it.std_dev_ns] }
+  ensure
+    Integer.alias_method(:to_f, :__real_to_f)
+    Integer.remove_method(:__real_to_f)
+  end
+
   def test_answer_values_reject_what_the_core_never_answers
     assert_equal [5, 128], Recorded.new(5, 128).to_h.values
     assert_raises(RangeError) { Recorded.new(0, 1) }

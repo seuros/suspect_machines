@@ -7,25 +7,14 @@ mod roster;
 mod values;
 
 use classes::classes;
-use magnus::{Error, Float, Integer, Ruby, TryConvert, Value, prelude::*};
-use matryona_machines::ruby::{Symbols, exact_fields};
+use magnus::{Error, Ruby, Value, prelude::*};
+use matryona_machines::ruby::{Symbols, exact_fields, finite};
 use suspect_machines::{Phi, Refusal, Threshold};
 
 /// Peers one roster can track.
 const CAPACITY: usize = 64;
 /// Intervals kept per peer, by a roster and by a detector alike.
 const WINDOW: usize = 128;
-
-/// A Float or Integer as `f64`; anything else is `TypeError`.
-fn real(value: Value, what: &'static str) -> Result<f64, Error> {
-    if Integer::from_value(value).is_none() && Float::from_value(value).is_none() {
-        return Err(Error::new(
-            Ruby::get_with(value).exception_type_error(),
-            what,
-        ));
-    }
-    f64::try_convert(value)
-}
 
 fn range_error(ruby: &Ruby, message: &'static str) -> Error {
     Error::new(ruby.exception_range_error(), message)
@@ -46,14 +35,14 @@ fn threshold(ruby: &Ruby, value: f64) -> Result<Threshold, Error> {
 fn phi_from(ruby: &Ruby, value: Value) -> Result<Phi, Error> {
     let message = "expected a SuspectMachines::Phi";
     let [level] = exact_fields(ruby, value, classes(ruby)?.phi.get(ruby), message)?;
-    phi(ruby, real(level, "phi must be a Float or Integer")?)
+    phi(ruby, finite(level, "phi")?)
 }
 
 /// The core's `Threshold` rebuilt from a `SuspectMachines::Threshold`.
 fn threshold_from(ruby: &Ruby, value: Value) -> Result<Threshold, Error> {
     let message = "expected a SuspectMachines::Threshold";
     let [level] = exact_fields(ruby, value, classes(ruby)?.threshold.get(ruby), message)?;
-    threshold(ruby, real(level, "threshold must be a Float or Integer")?)
+    threshold(ruby, finite(level, "threshold")?)
 }
 
 /// A `SuspectMachines::Phi` holding `phi`, built through `new`.
