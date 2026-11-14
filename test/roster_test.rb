@@ -226,6 +226,9 @@ class RosterTest < Minitest::Test
     roster.freeze
     assert_raises(FrozenError) { roster.heartbeat(1, 0, 20) }
     assert_raises(FrozenError) { roster.forget(1) }
+    # Frozen is checked before any argument is read.
+    assert_raises(FrozenError) { roster.heartbeat(:peer, -1, 1.5) }
+    assert_raises(FrozenError) { roster.forget(nil) }
     assert_in_delta 1 / Math.log(10), phi(roster, 1, 20), 1e-12
     assert_equal [1], roster.scan(20, level(0.1), 0, 64).suspects.map(&:peer)
     assert_equal 1, roster.statistics(1).samples

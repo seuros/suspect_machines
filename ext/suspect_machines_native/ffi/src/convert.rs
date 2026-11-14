@@ -1,11 +1,14 @@
 //! Ruby `Data` values to core types and back.
+use std::time::Duration;
+
 use magnus::{Error, Ruby, Symbol, Value, prelude::*};
+use matryona_machines::ruby::{duration, exact_fields, integer, nanoseconds, symbol};
 use suspect_machines::{
     Beat, Config, ConfigError, Distribution, Normal, Refusal, Statistics, Suspicion,
 };
 
-use crate::classes::{classes, exact, field};
-use crate::{Number, nanoseconds, phi_value, refusal};
+use crate::classes::classes;
+use crate::{phi_value, refusal};
 
 /// A constructor error of the core, raised as `RangeError`. `DurationOverflow`
 /// and `ZeroWindow` cannot be reached from Ruby: times are `u64` nanoseconds
@@ -33,13 +36,14 @@ pub fn distribution(ruby: &Ruby, value: Value) -> Result<Distribution, Error> {
         };
     }
     let message = "distribution must be :exponential or a SuspectMachines::Normal";
-    let floor: Number = field(exact(ruby, value, classes(ruby)?.normal, message)?, 0)?;
+    let [floor] = exact_fields(ruby, value, classes(ruby)?.normal.get(ruby), message)?;
+    let floor = duration(floor, "min_std_dev")?;
     normal(ruby, floor).map(Distribution::Normal)
 }
 
 /// The core's `Normal::new`: `RangeError` for a zero floor.
-pub fn normal(ruby: &Ruby, min_std_dev: Number) -> Result<Normal, Error> {
-    Normal::new(min_std_dev.duration()).map_err(|error| config_error(ruby, error))
+pub fn normal(ruby: &Ruby, min_std_dev: Duration) -> Result<Normal, Error> {
+    Normal::new(min_std_dev).map_err(|error| config_error(ruby, error))
 }
 
 /// A config read from Ruby, handed to the core's constructor `build` for a
@@ -55,45 +59,42 @@ pub fn configured<T>(
 fn distribution_value(ruby: &Ruby, distribution: Distribution) -> Result<Value, Error> {
     match distribution {
         Distribution::Normal(normal) => {
-            let floor = nanoseconds(ruby, normal.min_std_dev())?;
-            ruby.get_inner(classes(ruby)?.normal)
-                .funcall("new", (floor,))
+            let floor = nanoseconds(ruby, normal.min_std_dev());
+            classes(ruby)?.normal.get(ruby).funcall("new", (floor,))
         }
-        Distribution::Exponential => Ok(ruby.to_symbol("exponential").as_value()),
+        Distribution::Exponential => Ok(symbol(ruby, "exponential").as_value()),
     }
 }
 
 pub fn config(ruby: &Ruby, value: Value) -> Result<Config, Error> {
-    let held = exact(
-        ruby,
-        value,
-        classes(ruby)?.config,
-        "expected a SuspectMachines::Config",
-    )?;
-    let (min_samples, pause): (Number, Number) = (field(held, 1)?, field(held, 2)?);
-    config_from(ruby, field(held, 0)?, min_samples, pause)
+    let message = "expected a SuspectMachines::Config";
+    let [distribution, min_samples, pause] =
+        exact_fields(ruby, value, classes(ruby)?.config.get(ruby), message)?;
+    let min_samples = integer(min_samples, "min_samples")?;
+    let pause = duration(pause, "acceptable_pause")?;
+    config_from(ruby, distribution, min_samples, pause)
 }
 
 /// The core's `Config::new` then `Config::with_acceptable_pause`.
 pub fn config_from(
     ruby: &Ruby,
     distribution: Value,
-    min_samples: Number,
-    pause: Number,
+    min_samples: usize,
+    pause: Duration,
 ) -> Result<Config, Error> {
     let distribution = self::distribution(ruby, distribution)?;
-    Config::new(distribution, min_samples.index(ruby)?)
-        .and_then(|config| config.with_acceptable_pause(pause.duration()))
+    Config::new(distribution, min_samples)
+        .and_then(|config| config.with_acceptable_pause(pause))
         .map_err(|error| config_error(ruby, error))
 }
 
 pub fn config_value(ruby: &Ruby, config: Config) -> Result<Value, Error> {
-    ruby.get_inner(classes(ruby)?.config).funcall(
+    classes(ruby)?.config.get(ruby).funcall(
         "__build",
         (
             distribution_value(ruby, config.distribution())?,
             config.min_samples(),
-            nanoseconds(ruby, config.acceptable_pause())?,
+            nanoseconds(ruby, config.acceptable_pause()),
         ),
     )
 }
@@ -104,27 +105,29 @@ pub fn beat(ruby: &Ruby, outcome: Result<Beat, Refusal>) -> Result<Value, Error>
     let name = match outcome {
         Ok(Beat::First) => "first",
         Ok(Beat::Recorded { interval, samples }) => {
-            let recorded = ruby.get_inner(classes(ruby)?.recorded);
-            return recorded.funcall("new", (nanoseconds(ruby, interval)?, samples));
+            let recorded = classes(ruby)?.recorded.get(ruby);
+            return recorded.funcall("new", (nanoseconds(ruby, interval), samples));
         }
         Ok(Beat::Restarted) => "restarted",
         Err(refused) => return Ok(refusal(ruby, refused)),
     };
-    Ok(ruby.to_symbol(name).as_value())
+    Ok(symbol(ruby, name).as_value())
 }
 
 pub fn suspicion(ruby: &Ruby, outcome: Result<Suspicion, Refusal>) -> Result<Value, Error> {
     match outcome {
-        Ok(Suspicion::NoHeartbeat) => Ok(ruby.to_symbol("no_heartbeat").as_value()),
+        Ok(Suspicion::NoHeartbeat) => Ok(symbol(ruby, "no_heartbeat").as_value()),
         Ok(Suspicion::WarmingUp {
             samples,
             required,
             silence,
-        }) => ruby
-            .get_inner(classes(ruby)?.warming_up)
-            .funcall("new", (samples, required, nanoseconds(ruby, silence)?)),
-        Ok(Suspicion::Measured(phi)) => ruby
-            .get_inner(classes(ruby)?.measured)
+        }) => classes(ruby)?
+            .warming_up
+            .get(ruby)
+            .funcall("new", (samples, required, nanoseconds(ruby, silence))),
+        Ok(Suspicion::Measured(phi)) => classes(ruby)?
+            .measured
+            .get(ruby)
             .funcall("new", (phi_value(ruby, phi)?,)),
         Err(refused) => Ok(refusal(ruby, refused)),
     }
@@ -134,15 +137,17 @@ pub fn statistics(ruby: &Ruby, statistics: Option<Statistics>) -> Result<Option<
     let Some(statistics) = statistics else {
         return Ok(None);
     };
-    ruby.get_inner(classes(ruby)?.statistics)
+    classes(ruby)?
+        .statistics
+        .get(ruby)
         .funcall(
             "new",
             (
                 statistics.samples(),
                 statistics.mean_ns(),
                 statistics.std_dev_ns(),
-                nanoseconds(ruby, statistics.min())?,
-                nanoseconds(ruby, statistics.max())?,
+                nanoseconds(ruby, statistics.min()),
+                nanoseconds(ruby, statistics.max()),
             ),
         )
         .map(Some)

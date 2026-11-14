@@ -1,11 +1,11 @@
 //! `SuspectMachines::Detector`: one peer on its own.
 use std::cell::RefCell;
 
-use magnus::{Error, Ruby, Value, prelude::*, typed_data::Obj};
+use magnus::{Error, Integer, Ruby, Value, prelude::*, typed_data::Obj};
+use matryona_machines::ruby::{duration, keep, nanoseconds};
 use suspect_machines::Detector as Core;
 
-use crate::classes::keep;
-use crate::{Number, WINDOW, convert, nanoseconds_or_nil};
+use crate::{WINDOW, convert};
 
 #[magnus::wrap(class = "SuspectMachines::Detector", free_immediately, size)]
 pub struct Detector {
@@ -21,18 +21,21 @@ impl Detector {
     }
 
     /// Clone-then-keep: a `Recorded` answer is built through `new`.
-    pub fn heartbeat(ruby: &Ruby, this: Obj<Self>, now: Number) -> Result<Value, Error> {
+    pub fn heartbeat(ruby: &Ruby, this: Obj<Self>, now: Value) -> Result<Value, Error> {
+        this.check_frozen()?;
+        let now = duration(now, "now")?;
         keep(
             ruby,
             this,
             &this.core,
-            |core| core.heartbeat(now.duration()),
+            |core| core.heartbeat(now),
             |outcome| convert::beat(ruby, outcome),
         )
     }
 
-    pub fn suspicion(ruby: &Ruby, this: &Self, now: Number) -> Result<Value, Error> {
-        let outcome = this.core.borrow().suspicion(now.duration());
+    pub fn suspicion(ruby: &Ruby, this: &Self, now: Value) -> Result<Value, Error> {
+        let now = duration(now, "now")?;
+        let outcome = this.core.borrow().suspicion(now);
         convert::suspicion(ruby, outcome)
     }
 
@@ -45,8 +48,9 @@ impl Detector {
         self.core.borrow().samples()
     }
 
-    pub fn last_heartbeat(ruby: &Ruby, this: &Self) -> Result<Option<u64>, Error> {
-        nanoseconds_or_nil(ruby, this.core.borrow().last_heartbeat())
+    pub fn last_heartbeat(ruby: &Ruby, this: &Self) -> Option<Integer> {
+        let last = this.core.borrow().last_heartbeat();
+        last.map(|at| nanoseconds(ruby, at))
     }
 
     pub fn config(ruby: &Ruby, this: &Self) -> Result<Value, Error> {

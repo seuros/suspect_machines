@@ -95,6 +95,8 @@ class DetectorTest < Minitest::Test
     detector.freeze
     assert_raises(FrozenError) { detector.heartbeat(20) }
     assert_raises(FrozenError) { detector.reset }
+    # Frozen is checked before any argument is read.
+    assert_raises(FrozenError) { detector.heartbeat(1.5) }
     assert_in_delta 1 / Math.log(10), detector.suspicion(20).phi.value, 1e-12
     assert_equal [1, 10], [detector.samples, detector.last_heartbeat]
   end

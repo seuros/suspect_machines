@@ -4,9 +4,10 @@ use std::assert_matches;
 
 use super::*;
 use crate::test_support::{
-    Expected, MILLI, Model, Rng, SECOND, at, close, detector, exponential, measured, normal,
+    Expected, MILLI, Model, SECOND, XorShift64, at, close, detector, exponential, measured, normal,
     random_config, random_gap, threshold,
 };
+use matryona_machines::testing::refuses;
 
 mod values;
 
@@ -135,23 +136,22 @@ fn refused_heartbeats_and_reads_do_not_mutate() {
     let mut detector = detector::<4>(normal(MILLI, 1));
     assert!(detector.heartbeat(at(10 * SECOND)).is_ok());
     assert!(detector.heartbeat(at(11 * SECOND)).is_ok());
-    let before = detector.clone();
-    assert_eq!(
-        detector.heartbeat(at(11 * SECOND)),
-        Err(Refusal::SameInstant)
-    );
-    assert_eq!(
-        detector.heartbeat(at(11 * SECOND - 1)),
-        Err(Refusal::TimeRegression)
-    );
-    assert_eq!(detector.heartbeat(Duration::MAX), Err(Refusal::Overflow));
+    refuses(&mut detector, Refusal::SameInstant, |d| {
+        d.heartbeat(at(11 * SECOND))
+    });
+    refuses(&mut detector, Refusal::TimeRegression, |d| {
+        d.heartbeat(at(11 * SECOND - 1))
+    });
+    refuses(&mut detector, Refusal::Overflow, |d| {
+        d.heartbeat(Duration::MAX)
+    });
+    // `suspicion` takes `&self`: the compiler proves it changes nothing.
     assert_eq!(
         detector.suspicion(at(10 * SECOND)),
         Err(Refusal::TimeRegression)
     );
     assert_eq!(detector.suspicion(Duration::MAX), Err(Refusal::Overflow));
     assert!(detector.suspicion(at(12 * SECOND)).is_ok());
-    assert_eq!(detector, before);
 }
 
 #[test]
@@ -253,7 +253,7 @@ fn u64_limits_stay_finite_and_exact() {
 #[test]
 fn detector_matches_naive_model_on_random_schedules() {
     const WINDOW: usize = 16;
-    let mut rng = Rng::new(0xD17E_C704);
+    let mut rng = XorShift64::new(0xD17E_C704);
     let mut compared = 0;
     for _ in 0..40 {
         let config = random_config(&mut rng, WINDOW);
@@ -267,11 +267,9 @@ fn detector_matches_naive_model_on_random_schedules() {
                 now += random_gap(&mut rng);
                 now
             };
-            let before = detector.clone();
-            let outcome = detector.heartbeat(at(stamp));
-            assert_eq!(outcome, model.observe(stamp, WINDOW));
-            if outcome.is_err() {
-                assert_eq!(detector, before);
+            match model.observe(stamp, WINDOW) {
+                Err(refusal) => refuses(&mut detector, refusal, |d| d.heartbeat(at(stamp))),
+                expected => assert_eq!(detector.heartbeat(at(stamp)), expected),
             }
             assert_eq!(detector.samples(), model.intervals.len());
             if let Some(statistics) = detector.statistics() {

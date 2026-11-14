@@ -77,6 +77,7 @@ class ValuesTest < Minitest::Test
     assert_equal 1, scan.suspects.size
     assert_nil Scan.new([], nil).next
     assert_raises(RangeError) { Scan.new([], 64) }
+    assert_raises(TypeError) { Scan.new(Class.new(Array).new, nil) } # an Array subclass
     assert_raises(RangeError) { Scan.new([suspect] * 65, nil) }
     assert_raises(TypeError) { Scan.new([1], nil) }
     assert_raises(TypeError) { Scan.new(nil, nil) }
@@ -135,6 +136,40 @@ class ValuesTest < Minitest::Test
   def test_an_opened_singleton_class_is_still_the_gems_value
     config = Config.new(Normal.new(1).tap(&:singleton_class), 1).tap(&:singleton_class)
     assert_equal :first, Detector.new(config).heartbeat(0)
+  end
+
+  # Fields are read from the struct itself: a redefined reader is never
+  # called, so it can neither lie nor re-enter.
+  def test_a_redefined_reader_is_ignored
+    config = Config.new(Normal.new(1), 1)
+    level = Threshold.new(0.5)
+    listed = [Suspect.new(1, 0, phi(1.0))]
+    readers = { Config => %i[distribution min_samples acceptable_pause], Normal => %i[min_std_dev],
+                Threshold => %i[value], Phi => %i[value], Suspect => %i[peer incarnation phi] }
+    redefined(readers) do
+      assert_equal :first, Detector.new(config).heartbeat(0)
+      roster = Roster.new(config)
+      assert_equal Scan.new([], nil), roster.scan(0, level, 0, 1)
+      assert_equal 1, Scan.new(listed, nil).suspects.size
+      assert phi(1.0).reaches?(level)
+    end
+  end
+
+  def redefined(readers)
+    readers.each do |klass, names|
+      names.each do |name|
+        klass.alias_method(:"__real_#{name}", name)
+        klass.define_method(name) { raise "#{name} reader called" }
+      end
+    end
+    yield
+  ensure
+    readers.each do |klass, names|
+      names.each do |name|
+        klass.alias_method(name, :"__real_#{name}")
+        klass.remove_method(:"__real_#{name}")
+      end
+    end
   end
 
   def test_a_marshal_forged_value_never_reaches_the_core

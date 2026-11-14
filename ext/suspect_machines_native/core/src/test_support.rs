@@ -1,5 +1,5 @@
-//! Helpers shared by the crate's test modules: a deterministic generator, an
-//! independent phi reference and a naive detector model.
+//! Helpers shared by the crate's test modules: a uniform draw on matryona's
+//! deterministic generator, an independent phi reference and a naive detector model.
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation)]
 
 use core::time::Duration;
@@ -53,27 +53,16 @@ pub fn close(actual: f64, expected: f64, tolerance: f64) -> bool {
     within(actual, expected, tolerance, tolerance)
 }
 
-/// Deterministic xorshift64* generator for the randomized tests.
-pub struct Rng(u64);
+pub use matryona_machines::testing::XorShift64;
 
-impl Rng {
-    pub const fn new(seed: u64) -> Self {
-        Self(seed | 1)
-    }
+/// A uniform draw in `[0, 1)` for the randomized tests.
+pub trait Unit {
+    fn unit(&mut self) -> f64;
+}
 
-    pub const fn next(&mut self) -> u64 {
-        self.0 ^= self.0 >> 12;
-        self.0 ^= self.0 << 25;
-        self.0 ^= self.0 >> 27;
-        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
-    }
-
-    pub const fn below(&mut self, bound: u64) -> u64 {
-        self.next() % bound
-    }
-
-    pub fn unit(&mut self) -> f64 {
-        (self.next() >> 11) as f64 / (1u64 << 53) as f64
+impl Unit for XorShift64 {
+    fn unit(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
     }
 }
 
@@ -178,7 +167,7 @@ impl Model {
     }
 }
 
-pub fn random_config(rng: &mut Rng, window: usize) -> Config {
+pub fn random_config(rng: &mut XorShift64, window: usize) -> Config {
     let min_samples = 1 + rng.below(window as u64) as usize;
     let config = if rng.below(2) == 0 {
         normal(1_000 + rng.below(50 * MILLI), min_samples)
@@ -191,7 +180,7 @@ pub fn random_config(rng: &mut Rng, window: usize) -> Config {
 }
 
 /// A step that is usually a plausible heartbeat gap, sometimes zero.
-pub fn random_gap(rng: &mut Rng) -> u64 {
+pub fn random_gap(rng: &mut XorShift64) -> u64 {
     match rng.below(10) {
         0 => 0,
         1 => 1 + rng.below(30 * SECOND),

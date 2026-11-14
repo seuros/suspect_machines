@@ -4,8 +4,10 @@ use std::{assert_matches, vec::Vec};
 
 use super::*;
 use crate::test_support::{
-    Expected, MILLI, Model, Rng, SECOND, at, close, exponential, random_config, roster, threshold,
+    Expected, MILLI, Model, SECOND, Unit, XorShift64, at, close, exponential, random_config,
+    roster, threshold,
 };
+use matryona_machines::testing::{refuses, unchanged};
 
 #[test]
 fn roster_tracks_incarnations_capacity_and_forgetting() {
@@ -15,20 +17,26 @@ fn roster_tracks_incarnations_capacity_and_forgetting() {
     assert_eq!(roster.heartbeat(7, 3, at(10)), Ok(Beat::First));
     assert_eq!(roster.heartbeat(8, 0, at(10)), Ok(Beat::First));
     assert_eq!(roster.len(), 2);
-    let full = roster.clone();
-    assert_eq!(roster.heartbeat(9, 0, at(11)), Err(Refusal::Full));
-    assert_eq!(roster.heartbeat(7, 2, at(20)), Err(Refusal::Stale));
-    assert_eq!(roster.heartbeat(7, 3, at(9)), Err(Refusal::TimeRegression));
-    assert_eq!(roster.heartbeat(7, 4, at(9)), Err(Refusal::TimeRegression));
-    assert_eq!(roster.heartbeat(7, 3, at(10)), Err(Refusal::SameInstant));
-    assert_eq!(
-        roster.heartbeat(7, 3, Duration::MAX),
-        Err(Refusal::Overflow)
-    );
+    refuses(&mut roster, Refusal::Full, |r| r.heartbeat(9, 0, at(11)));
+    refuses(&mut roster, Refusal::Stale, |r| r.heartbeat(7, 2, at(20)));
+    refuses(&mut roster, Refusal::TimeRegression, |r| {
+        r.heartbeat(7, 3, at(9))
+    });
+    refuses(&mut roster, Refusal::TimeRegression, |r| {
+        r.heartbeat(7, 4, at(9))
+    });
+    refuses(&mut roster, Refusal::SameInstant, |r| {
+        r.heartbeat(7, 3, at(10))
+    });
+    refuses(&mut roster, Refusal::Overflow, |r| {
+        r.heartbeat(7, 3, Duration::MAX)
+    });
     assert_eq!(roster.suspicion(7, Duration::MAX), Err(Refusal::Overflow));
     assert_eq!(roster.suspicion(7, at(9)), Err(Refusal::TimeRegression));
-    assert_eq!(roster.forget(9), Forgetting::NotTracked);
-    assert_eq!(roster, full);
+    assert_eq!(
+        unchanged(&mut roster, |r| r.forget(9)),
+        Forgetting::NotTracked
+    );
 
     assert_matches!(
         roster.heartbeat(7, 3, at(20)),
@@ -49,9 +57,10 @@ fn roster_tracks_incarnations_capacity_and_forgetting() {
     assert_eq!(roster.heartbeat(7, 3, at(40)), Err(Refusal::Stale));
 
     assert_eq!(roster.forget(7), Forgetting::Forgotten);
-    let forgotten = roster.clone();
-    assert_eq!(roster.forget(7), Forgetting::NotTracked);
-    assert_eq!(roster, forgotten);
+    assert_eq!(
+        unchanged(&mut roster, |r| r.forget(7)),
+        Forgetting::NotTracked
+    );
     assert_eq!(roster.len(), 1);
     assert_eq!(roster.incarnation(7), None);
     assert_eq!(roster.statistics(7), None);
@@ -118,7 +127,7 @@ fn scan_is_bounded_resumable_and_skips_peers_without_phi() {
 fn roster_matches_naive_model_on_random_schedules() {
     const PEERS: usize = 6;
     const WINDOW: usize = 8;
-    let mut rng = Rng::new(0x0B5E_27ED);
+    let mut rng = XorShift64::new(0x0B5E_27ED);
     let mut listed = 0;
     for _ in 0..12 {
         let config = random_config(&mut rng, WINDOW);
@@ -170,11 +179,11 @@ fn roster_matches_naive_model_on_random_schedules() {
                     Ok(Beat::First)
                 }
             };
-            let before = roster.clone();
-            let outcome = roster.heartbeat(peer, incarnation, at(stamp));
-            assert_eq!(outcome, expected);
-            if outcome.is_err() {
-                assert_eq!(roster, before);
+            match expected {
+                Err(refusal) => refuses(&mut roster, refusal, |r| {
+                    r.heartbeat(peer, incarnation, at(stamp))
+                }),
+                Ok(_) => assert_eq!(roster.heartbeat(peer, incarnation, at(stamp)), expected),
             }
             assert_eq!(roster.len(), model.len());
 

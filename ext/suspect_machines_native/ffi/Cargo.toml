@@ -14,6 +14,7 @@ doctest = false
 [dependencies]
 suspect-machines.workspace = true
 magnus.workspace = true
+matryona-machines = { workspace = true, features = ["ruby"] }
 rb-sys.workspace = true
 
 [lints]

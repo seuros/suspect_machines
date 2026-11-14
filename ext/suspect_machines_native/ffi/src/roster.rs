@@ -1,13 +1,20 @@
 //! `SuspectMachines::Roster`.
 use std::cell::RefCell;
 
-use magnus::{Error, Ruby, Symbol, Value, prelude::*, typed_data::Obj};
+use magnus::{Error, Integer, Ruby, Symbol, Value, prelude::*, typed_data::Obj};
+use matryona_machines::ruby::{Symbols, duration, integer, keep, nanoseconds};
 use suspect_machines::{Forgetting, Roster as Core, Suspect};
 
-use crate::classes::{classes, keep};
-use crate::{
-    CAPACITY, Number, WINDOW, convert, nanoseconds_or_nil, phi_value, refusal, threshold_from,
-};
+use crate::classes::classes;
+use crate::{CAPACITY, WINDOW, convert, phi_value, refusal, threshold_from};
+
+matryona_machines::symbols! {
+    /// What `forget` answers.
+    Forgettings for Forgetting as "a forgetting" {
+        Forgotten => "forgotten",
+        NotTracked => "not_tracked",
+    }
+}
 
 #[magnus::wrap(class = "SuspectMachines::Roster", free_immediately, size)]
 pub struct Roster {
@@ -25,21 +32,25 @@ impl Roster {
     pub fn heartbeat(
         ruby: &Ruby,
         this: Obj<Self>,
-        peer: Number,
-        incarnation: Number,
-        now: Number,
+        peer: Value,
+        incarnation: Value,
+        now: Value,
     ) -> Result<Value, Error> {
+        this.check_frozen()?;
+        let (peer, incarnation) = (integer(peer, "peer")?, integer(incarnation, "incarnation")?);
+        let now = duration(now, "now")?;
         keep(
             ruby,
             this,
             &this.core,
-            |core| core.heartbeat(peer.0, incarnation.0, now.duration()),
+            |core| core.heartbeat(peer, incarnation, now),
             |outcome| convert::beat(ruby, outcome),
         )
     }
 
-    pub fn suspicion(ruby: &Ruby, this: &Self, peer: Number, now: Number) -> Result<Value, Error> {
-        let outcome = this.core.borrow().suspicion(peer.0, now.duration());
+    pub fn suspicion(ruby: &Ruby, this: &Self, peer: Value, now: Value) -> Result<Value, Error> {
+        let (peer, now) = (integer(peer, "peer")?, duration(now, "now")?);
+        let outcome = this.core.borrow().suspicion(peer, now);
         convert::suspicion(ruby, outcome)
     }
 
@@ -47,28 +58,25 @@ impl Roster {
     pub fn scan(
         ruby: &Ruby,
         this: &Self,
-        now: Number,
+        now: Value,
         threshold: Value,
-        cursor: Number,
-        limit: Number,
+        cursor: Value,
+        limit: Value,
     ) -> Result<Value, Error> {
-        let (threshold, cursor) = (threshold_from(ruby, threshold)?, cursor.index(ruby)?);
+        let now = duration(now, "now")?;
+        let (cursor, limit): (usize, usize) =
+            (integer(cursor, "cursor")?, integer(limit, "limit")?);
+        let threshold = threshold_from(ruby, threshold)?;
         let classes = classes(ruby)?;
-        let (suspect, scan_class) = (
-            ruby.get_inner(classes.suspect),
-            ruby.get_inner(classes.scan),
-        );
+        let (suspect, scan_class) = (classes.suspect.get(ruby), classes.scan.get(ruby));
         let mut buffer = [Suspect::default(); CAPACITY];
-        let out = buffer.get_mut(..limit.index(ruby)?).ok_or_else(|| {
+        let out = buffer.get_mut(..limit).ok_or_else(|| {
             Error::new(
                 ruby.exception_range_error(),
                 "limit exceeds the compiled capacity",
             )
         })?;
-        let outcome = this
-            .core
-            .borrow()
-            .scan(now.duration(), threshold, cursor, out);
+        let outcome = this.core.borrow().scan(now, threshold, cursor, out);
         let scan = match outcome {
             Ok(scan) => scan,
             Err(refused) => return Ok(refusal(ruby, refused)),
@@ -82,26 +90,25 @@ impl Roster {
         scan_class.funcall("new", (suspects, scan.next()))
     }
 
-    pub fn statistics(ruby: &Ruby, this: &Self, peer: Number) -> Result<Option<Value>, Error> {
-        let statistics = this.core.borrow().statistics(peer.0);
+    pub fn statistics(ruby: &Ruby, this: &Self, peer: Value) -> Result<Option<Value>, Error> {
+        let statistics = this.core.borrow().statistics(integer(peer, "peer")?);
         convert::statistics(ruby, statistics)
     }
 
-    pub fn incarnation(&self, peer: Number) -> Option<u64> {
-        self.core.borrow().incarnation(peer.0)
+    pub fn incarnation(&self, peer: Value) -> Result<Option<u64>, Error> {
+        Ok(self.core.borrow().incarnation(integer(peer, "peer")?))
     }
 
-    pub fn last_heartbeat(ruby: &Ruby, this: &Self, peer: Number) -> Result<Option<u64>, Error> {
-        nanoseconds_or_nil(ruby, this.core.borrow().last_heartbeat(peer.0))
+    pub fn last_heartbeat(ruby: &Ruby, this: &Self, peer: Value) -> Result<Option<Integer>, Error> {
+        let last = this.core.borrow().last_heartbeat(integer(peer, "peer")?);
+        Ok(last.map(|at| nanoseconds(ruby, at)))
     }
 
-    pub fn forget(ruby: &Ruby, this: Obj<Self>, peer: Number) -> Result<Symbol, Error> {
+    pub fn forget(ruby: &Ruby, this: Obj<Self>, peer: Value) -> Result<Symbol, Error> {
         this.check_frozen()?;
-        let outcome = this.core.borrow_mut().forget(peer.0);
-        Ok(ruby.to_symbol(match outcome {
-            Forgetting::Forgotten => "forgotten",
-            Forgetting::NotTracked => "not_tracked",
-        }))
+        let peer = integer(peer, "peer")?;
+        let outcome = this.core.borrow_mut().forget(peer);
+        Ok(Forgettings::symbol(ruby, outcome))
     }
 
     pub fn size(&self) -> usize {

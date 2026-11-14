@@ -1,7 +1,7 @@
 #![allow(clippy::float_cmp, clippy::cast_precision_loss)]
 
 use super::*;
-use crate::test_support::{Rng, reference_normal_phi, within as close};
+use crate::test_support::{Unit, XorShift64, reference_normal_phi, within as close};
 
 /// `-log10(Q(z))` computed with 80-digit decimal arithmetic.
 const NORMAL_PHI: [(f64, f64); 20] = [
@@ -29,7 +29,7 @@ const NORMAL_PHI: [(f64, f64); 20] = [
 
 #[test]
 fn sqrt_matches_std_within_documented_bound() {
-    let mut rng = Rng::new(0x5EED_0001);
+    let mut rng = XorShift64::new(0x5EED_0001);
     for _ in 0..20_000 {
         let exponent = i32::try_from(rng.below(600)).expect("below 600") - 300;
         let x = (1.0 + rng.unit()) * 10f64.powi(exponent);
@@ -46,7 +46,7 @@ fn sqrt_matches_std_within_documented_bound() {
 
 #[test]
 fn exp_matches_std_within_documented_bound() {
-    let mut rng = Rng::new(0x5EED_0002);
+    let mut rng = XorShift64::new(0x5EED_0002);
     for _ in 0..20_000 {
         let x = -708.0 + rng.unit() * 1417.0;
         assert!(close(exp(x), x.exp(), 0.0, 1e-14), "exp({x})");
@@ -63,7 +63,7 @@ fn exp_matches_std_within_documented_bound() {
 
 #[test]
 fn ln_matches_std_within_documented_bound() {
-    let mut rng = Rng::new(0x5EED_0003);
+    let mut rng = XorShift64::new(0x5EED_0003);
     for _ in 0..20_000 {
         let exponent = i32::try_from(rng.below(600)).expect("below 600") - 300;
         let x = (1.0 + 9.0 * rng.unit()) * 10f64.powi(exponent);
@@ -94,7 +94,7 @@ fn normal_phi_matches_high_precision_table() {
 
 #[test]
 fn normal_phi_matches_independent_quadrature() {
-    let mut rng = Rng::new(0x5EED_0004);
+    let mut rng = XorShift64::new(0x5EED_0004);
     for step in 0..400 {
         let z = -10.0 + f64::from(step) * 0.125;
         assert!(close(normal_phi(z), reference_normal_phi(z), 1e-9, 1e-9));

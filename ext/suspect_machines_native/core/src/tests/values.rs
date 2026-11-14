@@ -1,7 +1,7 @@
 //! Every value the core answers has a validating constructor, and what the
 //! detector and roster answer always passes it.
 use super::*;
-use crate::test_support::{Rng, at, detector, exponential, normal, roster, threshold};
+use crate::test_support::{XorShift64, at, detector, exponential, normal, roster, threshold};
 
 #[test]
 fn phi_and_threshold_hold_only_finite_levels() {
@@ -88,13 +88,13 @@ fn answer_constructors_hold_what_a_window_and_a_roster_can_answer() {
 /// its constructor accepts, so a value rebuilt from its fields is the same.
 #[test]
 fn answered_values_pass_their_constructors() {
-    let mut rng = Rng::new(0x5EED);
+    let mut rng = XorShift64::new(0x5EED);
     let mut single = detector::<8>(normal(1, 3));
     let mut table = roster::<4, 8>(exponential(2));
     let mut now = 0;
     for _ in 0..2_000 {
-        now += 1 + rng.next() % 50;
-        let peer = rng.next() % 6;
+        now += 1 + rng.next_u64() % 50;
+        let peer = rng.next_u64() % 6;
         for beat in [single.heartbeat(at(now)), table.heartbeat(peer, 0, at(now))] {
             if let Ok(Beat::Recorded { interval, samples }) = beat {
                 assert!(Beat::recorded::<8>(interval, samples).is_some());
@@ -129,12 +129,12 @@ fn answered_values_pass_their_constructors() {
             assert_eq!(rebuilt, Some(stats));
         }
         let mut out = [Suspect::default(); 2];
-        let cursor = usize::try_from(rng.next() % 4).expect("below four");
+        let cursor = usize::try_from(rng.next_u64() % 4).expect("below four");
         let scan = table
             .scan(at(now + 7), threshold(0.5), cursor, &mut out)
             .expect("an instant that fits u64 nanoseconds");
         assert_eq!(Scan::new::<4>(scan.suspects(), scan.next()), Some(scan));
-        if rng.next().is_multiple_of(40) {
+        if rng.next_u64().is_multiple_of(40) {
             let tracked = table.incarnation(peer).is_some();
             assert_eq!(table.forget(peer) == Forgetting::Forgotten, tracked);
         }

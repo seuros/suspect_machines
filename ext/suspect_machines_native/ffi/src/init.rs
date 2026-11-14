@@ -16,7 +16,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     module.define_singleton_method("__statistics", function!(values::statistics, 5))?;
     module.define_singleton_method("__suspect", function!(values::suspect, 3))?;
     module.define_singleton_method("__scan", function!(values::scan, 2))?;
-    let phi = ruby.get_inner(classes::resolve(ruby, module)?.phi);
+    let phi = classes::resolve(ruby, module)?.phi.get(ruby);
     phi.define_method("millis", method!(values::millis, 0))?;
     phi.define_method("reaches?", method!(values::reaches, 1))?;
 
