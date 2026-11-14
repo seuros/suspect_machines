@@ -1,8 +1,10 @@
 //! Ruby `Data` values to core types and back.
 use std::time::Duration;
 
-use magnus::{Error, Ruby, Symbol, Value, prelude::*};
-use matryona_machines::ruby::{duration, exact_fields, integer, nanoseconds, symbol};
+use magnus::{Error, Ruby, Value, prelude::*};
+use matryona_machines::ruby::{
+    Choice, SymbolNames, duration, exact_fields, integer, nanoseconds, symbol, symbol_or_fields,
+};
 use suspect_machines::{
     Beat, Config, ConfigError, Distribution, Normal, Refusal, Statistics, Suspicion,
 };
@@ -24,21 +26,25 @@ pub fn config_error(ruby: &Ruby, error: ConfigError) -> Error {
     Error::new(ruby.exception_range_error(), message)
 }
 
+matryona_machines::symbols! {
+    /// A distribution as Ruby holds it: `:exponential`, or a `Normal`.
+    Distributions for Distribution as "a distribution" => names_only {
+        Normal(..) => "normal",
+        Exponential => "exponential",
+    }
+}
+
 /// `:exponential`, or a `Normal` carrying its deviation floor.
 pub fn distribution(ruby: &Ruby, value: Value) -> Result<Distribution, Error> {
-    if let Some(symbol) = Symbol::from_value(value) {
-        return match symbol.name()?.as_ref() {
-            "exponential" => Ok(Distribution::Exponential),
-            _ => Err(Error::new(
-                ruby.exception_range_error(),
-                "distribution must be :exponential or a SuspectMachines::Normal",
-            )),
-        };
-    }
     let message = "distribution must be :exponential or a SuspectMachines::Normal";
-    let [floor] = exact_fields(ruby, value, classes(ruby)?.normal.get(ruby), message)?;
-    let floor = duration(floor, "min_std_dev")?;
-    normal(ruby, floor).map(Distribution::Normal)
+    let normal_class = classes(ruby)?.normal.get(ruby);
+    match symbol_or_fields(ruby, value, Distributions, &[normal_class], message)? {
+        Choice::Symbol(distribution) => Ok(distribution),
+        Choice::Struct(_, [floor]) => {
+            let floor = duration(floor, "min_std_dev")?;
+            normal(ruby, floor).map(Distribution::Normal)
+        }
+    }
 }
 
 /// The core's `Normal::new`: `RangeError` for a zero floor.
@@ -62,7 +68,9 @@ fn distribution_value(ruby: &Ruby, distribution: Distribution) -> Result<Value, 
             let floor = nanoseconds(ruby, normal.min_std_dev());
             classes(ruby)?.normal.get(ruby).funcall("new", (floor,))
         }
-        Distribution::Exponential => Ok(symbol(ruby, "exponential").as_value()),
+        Distribution::Exponential => {
+            Ok(Distributions::symbol(ruby, &Distribution::Exponential).as_value())
+        }
     }
 }
 
