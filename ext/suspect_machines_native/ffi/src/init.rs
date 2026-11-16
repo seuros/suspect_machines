@@ -16,7 +16,13 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     module.define_singleton_method("__statistics", function!(values::statistics, 5))?;
     module.define_singleton_method("__suspect", function!(values::suspect, 3))?;
     module.define_singleton_method("__scan", function!(values::scan, 2))?;
-    let phi = classes::resolve(ruby, module)?.phi.get(ruby);
+    let resolved = classes::resolve(ruby, module)?;
+    let config = resolved.config.get(ruby);
+    config.define_method(
+        "with_acceptable_pause",
+        method!(values::with_acceptable_pause, 1),
+    )?;
+    let phi = resolved.phi.get(ruby);
     phi.define_method("millis", method!(values::millis, 0))?;
     phi.define_method("reaches?", method!(values::reaches, 1))?;
 

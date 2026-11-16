@@ -222,6 +222,17 @@ class RosterTest < Minitest::Test
     assert_raises(TypeError) { SuspectMachines::Roster.allocate }
   end
 
+  # An unknown Symbol, a data variant's name included, is refused by name;
+  # a value of the wrong class hears what a distribution may be.
+  def test_a_refused_distribution_names_what_it_got
+    %i[weibull normal].each do |name|
+      error = assert_raises(RangeError) { Config.new(name, 3) }
+      assert_equal "unknown distribution :#{name}", error.message
+    end
+    error = assert_raises(TypeError) { Config.new('normal', 3) }
+    assert_equal 'distribution must be :exponential or a SuspectMachines::Normal', error.message
+  end
+
   def test_freeze_guards_writes_and_keeps_reads
     roster = exponential
     roster.heartbeat(1, 0, 0)

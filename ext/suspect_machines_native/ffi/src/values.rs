@@ -52,6 +52,19 @@ pub fn config(
     Ok((distribution, min_samples, pause))
 }
 
+/// `Config#with_acceptable_pause`: the core's `Config::with_acceptable_pause`
+/// on this config, read by its exact class from the struct (no reader runs)
+/// and revalidated through the core, since `Marshal.load` skips
+/// `initialize`. The copy is built from what the core answered.
+pub fn with_acceptable_pause(ruby: &Ruby, this: Value, pause: Value) -> Result<Value, Error> {
+    let config = convert::config(ruby, this)?;
+    let pause: u64 = integer(pause, "acceptable_pause")?;
+    let paused = config
+        .with_acceptable_pause(Duration::from_nanos(pause))
+        .map_err(|error| convert::config_error(ruby, error))?;
+    convert::config_value(ruby, paused)
+}
+
 /// `Recorded.new`: the core's `Beat::recorded` for the compiled window.
 pub fn recorded(ruby: &Ruby, interval: Value, samples: Value) -> Result<(u64, usize), Error> {
     let interval: u64 = integer(interval, "interval")?;

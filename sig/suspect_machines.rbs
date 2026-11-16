@@ -26,6 +26,23 @@ module SuspectMachines
   # The core's `Suspicion`.
   type suspicion = :no_heartbeat | WarmingUp | Measured
 
+  # Private native checks behind the Data values: each answers the fields as
+  # the core holds them (a Float for a phi, a threshold, a mean or a
+  # deviation; a frozen copy of the suspects), TypeError for a wrong type,
+  # RangeError for a value the core would never hold.
+  private def self.__phi: (Float | Integer value) -> Float
+  private def self.__threshold: (Float | Integer value) -> Float
+  private def self.__normal: (Integer min_std_dev) -> Integer
+  private def self.__config: (distribution distribution, Integer min_samples, Integer acceptable_pause)
+                           -> [distribution, Integer, Integer]
+  private def self.__recorded: (Integer interval, Integer samples) -> [Integer, Integer]
+  private def self.__warming_up: (Integer samples, Integer required, Integer silence) -> [Integer, Integer, Integer]
+  private def self.__measured: (Phi phi) -> Phi
+  private def self.__statistics: (Integer samples, Float | Integer mean_ns, Float | Integer std_dev_ns, Integer min,
+                                  Integer max) -> [Integer, Float, Float, Integer, Integer]
+  private def self.__suspect: (Integer peer, Integer incarnation, Phi phi) -> [Integer, Integer, Phi]
+  private def self.__scan: (Array[Suspect] suspects, Integer? next) -> [Array[Suspect], Integer?]
+
   # Mirrors the core's `Phi`: `value` is a finite, non-negative Float
   # (-0.0 is stored as 0.0). Integer input is stored as a Float.
   class Phi < Data
@@ -63,6 +80,9 @@ module SuspectMachines
     attr_reader min_samples: Integer
     attr_reader acceptable_pause: Integer
     def self.new: (distribution distribution, Integer min_samples) -> Config
+    # Data's own `new`, kept under a private name for the three-field build.
+    private def self.__build: (distribution distribution, Integer min_samples, Integer acceptable_pause) -> Config
+                            | (distribution: distribution, min_samples: Integer, acceptable_pause: Integer) -> Config
     # A copy that tolerates `pause` of extra silence.
     def with_acceptable_pause: (Integer pause) -> Config
   end

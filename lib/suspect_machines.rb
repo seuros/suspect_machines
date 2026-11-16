@@ -50,7 +50,9 @@ module SuspectMachines
       super
     end
 
-    def with_acceptable_pause(pause) = self.class.send(:__build, distribution, min_samples, pause)
+    # `with_acceptable_pause(pause)` is native: the core's
+    # `Config::with_acceptable_pause` on this config, read from the struct by
+    # its exact class (never through the readers) and checked again.
   end
 
   # The core's `Beat::Recorded`: an accepted heartbeat that put an interval in

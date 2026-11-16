@@ -6,8 +6,9 @@ Gem::Specification.new do |spec|
   spec.version = SuspectMachines::VERSION
   spec.authors = ['Abdelkader Boudih']
   spec.email = ['oss@seuros.com']
-  spec.summary = 'Initial bounded phi-accrual heartbeat suspicion with a native Rust core'
-  spec.description = 'Local unstable heartbeat statistics and advisory phi-accrual suspicion; not an authority.'
+  spec.summary = 'Phi-accrual failure detection over a native Rust core'
+  spec.description = 'Records peer heartbeats and reports how suspicious each silence is as a phi value ' \
+                     'scaled to that peer\'s own rhythm. Advisory only: it never declares a peer dead.'
   spec.homepage = 'https://github.com/seuros/suspect_machines'
   spec.license = 'MIT'
   spec.required_ruby_version = '>= 4.0.0'

@@ -7,7 +7,7 @@
 //! struct (no reader runs) and rebuilt through the core constructor, which
 //! `Marshal.load` skipped.
 use magnus::{Error, RModule, Ruby};
-use matryona_machines::ruby::{Class, Registry};
+use matryona_machines::ruby::Class;
 
 /// Every `Data` class the binding checks or builds.
 pub struct Classes {
@@ -23,7 +23,11 @@ pub struct Classes {
     pub scan: Class,
 }
 
-static CLASSES: Registry<Classes> = Registry::new("suspect_machines");
+matryona_machines::registry! {
+    static CLASSES: Classes = "suspect_machines";
+    /// The classes resolved at load.
+    pub fn classes;
+}
 
 /// Resolve the classes `suspect_machines.rb` defined before requiring the
 /// extension.
@@ -42,9 +46,4 @@ pub fn resolve(ruby: &Ruby, module: RModule) -> Result<&'static Classes, Error> 
         scan: class("Scan")?,
     };
     CLASSES.set(ruby, resolved)
-}
-
-/// The classes resolved at load.
-pub fn classes(ruby: &Ruby) -> Result<&'static Classes, Error> {
-    CLASSES.get(ruby)
 }

@@ -50,14 +50,11 @@ class ValuesTest < Minitest::Test
       assert_equal 'mean_ns must be finite', assert_raises(RangeError) { Statistics.new(1, bad, 0, 1, 1) }.message
       assert_equal 'std_dev_ns must be finite', assert_raises(RangeError) { Statistics.new(1, 1, bad, 1, 1) }.message
     end
-    Integer.alias_method(:__real_to_f, :to_f)
-    Integer.define_method(:to_f) { raise 'Integer#to_f called' }
-    assert_equal 3.0, phi(3).value
-    assert_equal 2.0, Threshold.new(2).value
-    assert_equal [15.0, 5.0], Statistics.new(2, 15, 5, 10, 20).then { [it.mean_ns, it.std_dev_ns] }
-  ensure
-    Integer.alias_method(:to_f, :__real_to_f)
-    Integer.remove_method(:__real_to_f)
+    redefining(Integer, to_f: proc { raise 'Integer#to_f called' }) do
+      assert_equal 3.0, phi(3).value
+      assert_equal 2.0, Threshold.new(2).value
+      assert_equal [15.0, 5.0], Statistics.new(2, 15, 5, 10, 20).then { [it.mean_ns, it.std_dev_ns] }
+    end
   end
 
   def test_answer_values_reject_what_the_core_never_answers
@@ -156,6 +153,8 @@ class ValuesTest < Minitest::Test
     assert_raises(TypeError) { roster.scan(0, ForgedThreshold.new(value: -1.0), 0, 1) }
     assert_raises(TypeError) { Measured.new(ForgedPhi.new(value: -1.0)) }
     assert_raises(TypeError) { phi(1).reaches?(ForgedThreshold.new(value: 0.5)) }
+    error = assert_raises(TypeError) { ForgedConfig.send(:__build, :exponential, 1, 0).with_acceptable_pause(5) }
+    assert_equal 'expected a SuspectMachines::Config', error.message
   ensure
     %i[ForgedConfig ForgedThreshold ForgedPhi].each do |name|
       self.class.send(:remove_const, name) if self.class.const_defined?(name, false)
@@ -184,29 +183,23 @@ class ValuesTest < Minitest::Test
       assert_equal Scan.new([], nil), roster.scan(0, level, 0, 1)
       assert_equal 1, Scan.new(listed, nil).suspects.size
       assert phi(1.0).reaches?(level)
+      assert_equal Config.send(:__build, Normal.new(1), 1, 7), config.with_acceptable_pause(7)
     end
   end
 
   def redefined(readers)
-    readers.each do |klass, names|
-      names.each do |name|
-        klass.alias_method(:"__real_#{name}", name)
-        klass.define_method(name) { raise "#{name} reader called" }
-      end
-    end
+    originals = readers.flat_map { |klass, names| names.map { [klass, it, klass.instance_method(it)] } }
+    originals.each { |klass, name, _| replace_method(klass, name, proc { raise "#{name} reader called" }) }
     yield
   ensure
-    readers.each do |klass, names|
-      names.each do |name|
-        klass.alias_method(name, :"__real_#{name}")
-        klass.remove_method(:"__real_#{name}")
-      end
-    end
+    originals&.each { |klass, name, method| replace_method(klass, name, (method if method.owner == klass)) }
   end
 
   def test_a_marshal_forged_value_never_reaches_the_core
     assert_raises(RangeError) { Detector.new(forged(Config, :exponential, 0, 0)) }
     assert_raises(RangeError) { Detector.new(Config.new(forged(Normal, 0), 1)) }
+    assert_raises(RangeError) { forged(Config, :exponential, 0, 0).with_acceptable_pause(5) }
+    assert_raises(RangeError) { forged(Config, forged(Normal, 0), 1, 0).with_acceptable_pause(5) }
     roster = Roster.new(Config.new(:exponential, 1))
     assert_raises(RangeError) { roster.scan(0, forged(Threshold, -1.0), 0, 1) }
     assert_raises(RangeError) { Measured.new(forged(Phi, Float::NAN)) }
@@ -292,20 +285,39 @@ class ValuesTest < Minitest::Test
 
   # Runs the block with `klass.new` calling `hook` first, once; the original
   # `new` is restored afterwards.
-  def replacing(klass, hook)
+  def replacing(klass, hook, &)
     original = klass.method(:new)
     armed = true
-    klass.define_singleton_method(:new) do |*args, **kw|
+    body = proc do |*args, **kw|
       if armed
         armed = false
         hook.call(*args)
       end
       original.call(*args, **kw)
     end
+    redefining(klass.singleton_class, new: body, &)
+  end
+
+  # Runs the block with each method of `klass` named in `bodies` replaced by
+  # its body, then restores the originals.
+  def redefining(klass, **bodies)
+    originals = bodies.to_h { |name, _| [name, klass.instance_method(name)] }
+    bodies.each { |name, body| replace_method(klass, name, body) }
     yield
   ensure
-    klass.singleton_class.send(:remove_method, :new)
-    klass.define_singleton_method(:new, original)
+    originals&.each { |name, method| replace_method(klass, name, (method if method.owner == klass)) }
+  end
+
+  # Defines `name` on `klass` as `body` (removes it when `body` is nil),
+  # removing the method `klass` itself holds first. Ruby warns about the
+  # redefinition, deliberate here, so warnings are off for the swap alone.
+  def replace_method(klass, name, body)
+    verbose = $VERBOSE
+    $VERBOSE = nil
+    klass.remove_method(name) if klass.method_defined?(name, false) || klass.private_method_defined?(name, false)
+    klass.define_method(name, body) if body
+  ensure
+    $VERBOSE = verbose
   end
 
   # An instance of `klass` holding `fields`, loaded by Marshal from a look-alike

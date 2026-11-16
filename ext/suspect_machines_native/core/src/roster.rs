@@ -97,6 +97,7 @@ impl Scan {
 }
 
 /// What an honoured [`Roster::forget`] did.
+#[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Forgetting {
     /// The peer was tracked; its slot is now free.
@@ -282,6 +283,7 @@ impl<const P: usize, const W: usize> Roster<P, W> {
     ///
     /// Never refuses. [`Forgetting::NotTracked`] is an idempotent repeat: the
     /// peer was already absent and nothing changed.
+    #[must_use = "`NotTracked` means the peer was already absent and nothing changed"]
     pub fn forget(&mut self, peer: u64) -> Forgetting {
         self.entry(peer).map_or(Forgetting::NotTracked, |entry| {
             *entry = None;

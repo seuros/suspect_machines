@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use magnus::{Error, Ruby, Value, prelude::*};
 use matryona_machines::ruby::{
-    Choice, SymbolNames, duration, exact_fields, integer, nanoseconds, symbol, symbol_or_fields,
+    Choice, Refused, SymbolNames, duration, exact_fields, integer, nanoseconds,
+    symbol_or_fields_why,
 };
 use suspect_machines::{
     Beat, Config, ConfigError, Distribution, Normal, Refusal, Statistics, Suspicion,
@@ -34,11 +35,41 @@ matryona_machines::symbols! {
     }
 }
 
-/// `:exponential`, or a `Normal` carrying its deviation floor.
+matryona_machines::symbols! {
+    /// A beat as Ruby holds it: `:first`, a `Recorded`, or `:restarted`.
+    Beats for Beat as "a beat" => names_only {
+        First => "first",
+        Recorded { .. } => "recorded",
+        Restarted => "restarted",
+    }
+}
+
+matryona_machines::symbols! {
+    /// A suspicion as Ruby holds it: `:no_heartbeat`, a `WarmingUp`, or a
+    /// `Measured`.
+    Suspicions for Suspicion as "a suspicion" => names_only {
+        NoHeartbeat => "no_heartbeat",
+        WarmingUp { .. } => "warming_up",
+        Measured(..) => "measured",
+    }
+}
+
+/// `:exponential`, or a `Normal` carrying its deviation floor: `RangeError`
+/// naming any other Symbol (`unknown distribution :nope`), `TypeError` for
+/// anything else.
 pub fn distribution(ruby: &Ruby, value: Value) -> Result<Distribution, Error> {
-    let message = "distribution must be :exponential or a SuspectMachines::Normal";
     let normal_class = classes(ruby)?.normal.get(ruby);
-    match symbol_or_fields(ruby, value, Distributions, &[normal_class], message)? {
+    let read = symbol_or_fields_why(
+        ruby,
+        value,
+        Distributions,
+        &[normal_class],
+        |why| match why {
+            Refused::UnknownSymbol(symbol) => format!("unknown distribution {}", symbol.inspect()),
+            _ => "distribution must be :exponential or a SuspectMachines::Normal".into(),
+        },
+    )?;
+    match read {
         Choice::Symbol(distribution) => Ok(distribution),
         Choice::Struct(_, [floor]) => {
             let floor = duration(floor, "min_std_dev")?;
@@ -110,21 +141,21 @@ pub fn config_value(ruby: &Ruby, config: Config) -> Result<Value, Error> {
 /// An answer of `heartbeat`; a `Recorded` is built through `new`. The
 /// interval is a difference of two `u64` instants, so it always fits.
 pub fn beat(ruby: &Ruby, outcome: Result<Beat, Refusal>) -> Result<Value, Error> {
-    let name = match outcome {
-        Ok(Beat::First) => "first",
+    match outcome {
         Ok(Beat::Recorded { interval, samples }) => {
             let recorded = classes(ruby)?.recorded.get(ruby);
-            return recorded.funcall("new", (nanoseconds(ruby, interval), samples));
+            recorded.funcall("new", (nanoseconds(ruby, interval), samples))
         }
-        Ok(Beat::Restarted) => "restarted",
-        Err(refused) => return Ok(refusal(ruby, refused)),
-    };
-    Ok(symbol(ruby, name).as_value())
+        Ok(beat @ (Beat::First | Beat::Restarted)) => Ok(Beats::symbol_of(ruby, beat).as_value()),
+        Err(refused) => Ok(refusal(ruby, refused)),
+    }
 }
 
 pub fn suspicion(ruby: &Ruby, outcome: Result<Suspicion, Refusal>) -> Result<Value, Error> {
     match outcome {
-        Ok(Suspicion::NoHeartbeat) => Ok(symbol(ruby, "no_heartbeat").as_value()),
+        Ok(Suspicion::NoHeartbeat) => {
+            Ok(Suspicions::symbol_of(ruby, Suspicion::NoHeartbeat).as_value())
+        }
         Ok(Suspicion::WarmingUp {
             samples,
             required,

@@ -85,6 +85,8 @@ fn decompose(x: f64) -> (i32, f64) {
     };
     let bits = scaled.to_bits();
     let mantissa = f64::from_bits((bits & MANTISSA_MASK) | ONE_BITS);
+    // The field is at most 2047 and `lift` 54: integer exponent arithmetic in
+    // this module stays within a few thousand of zero.
     (exponent_field(bits) - EXPONENT_BIAS - lift, mantissa)
 }
 

@@ -95,6 +95,8 @@ impl<const W: usize> Window<W> {
                 self.len += 1;
             }
             *slot = interval;
+            // At most W u64 intervals, each subtracted when it leaves: the u128
+            // sum cannot wrap, and `% W` runs only when W > 0.
             self.sum += u128::from(interval);
             self.next = (self.next + 1) % W;
         }
