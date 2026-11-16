@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.3](https://github.com/seuros/suspect_machines/compare/suspect_machines/v0.5.2...suspect_machines/v0.5.3) (2026-11-16)
+
+
+### Bug Fixes
+
+* fix wrapped classes at load so building a value runs no Ruby ([8f0f448](https://github.com/seuros/suspect_machines/commit/8f0f448eeb86b38f9f3cc070a7f15204ae2593a9))
+
 ## [0.5.2](https://github.com/seuros/suspect_machines/compare/suspect_machines/v0.5.1...suspect_machines/v0.5.2) (2026-11-16)
 
 
