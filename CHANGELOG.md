@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2](https://github.com/seuros/suspect_machines/compare/suspect_machines/v0.5.1...suspect_machines/v0.5.2) (2026-11-16)
+
+
+### Bug Fixes
+
+* revalidate Config#with_acceptable_pause through the core ([52ce530](https://github.com/seuros/suspect_machines/commit/52ce5309b1ffec9922b2e1ca3720f6090637bb96))
+
 ## [0.5.1](https://github.com/seuros/suspect_machines/compare/suspect_machines/v0.5.0...suspect_machines/v0.5.1) (2026-11-14)
 
 
