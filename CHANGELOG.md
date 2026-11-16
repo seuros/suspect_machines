@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.0](https://github.com/seuros/suspect_machines/compare/suspect_machines/v0.5.3...suspect_machines/v0.6.0) (2026-11-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* scan names warm-up peers silent past a ceiling
+
+### Features
+
+* scan names warm-up peers silent past a ceiling ([612018f](https://github.com/seuros/suspect_machines/commit/612018f2ca946205ebbc9cff82951ef8350f8d89))
+
 ## [0.5.3](https://github.com/seuros/suspect_machines/compare/suspect_machines/v0.5.2...suspect_machines/v0.5.3) (2026-11-16)
 
 
