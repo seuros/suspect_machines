@@ -1,5 +1,6 @@
 //! Private native entry point.
 use magnus::{Error, Ruby, function, method, prelude::*};
+use matryona_machines::ruby::Class;
 
 use crate::{CAPACITY, WINDOW, classes, detector::Detector, roster::Roster, values};
 
@@ -38,6 +39,8 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     class.define_method("config", method!(Detector::config, 0))?;
     class.define_method("reset", method!(Detector::reset, 0))?;
     class.define_method("window", function!(Detector::window, 0))?;
+    // `new` answers a Detector: its class is fixed now, before it runs.
+    Class::pin_wrapped::<Detector>(ruby, class)?;
 
     let class = module.define_class("Roster", ruby.class_object())?;
     class.undef_default_alloc_func();
@@ -56,5 +59,5 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     class.define_method("config", method!(Roster::config, 0))?;
     class.define_method("capacity", function!(Roster::capacity, 0))?;
     class.define_method("window", function!(Roster::window, 0))?;
-    Ok(())
+    Class::pin_wrapped::<Roster>(ruby, class).map(drop)
 }
