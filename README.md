@@ -128,7 +128,7 @@ roster.suspicion(7, 60 * SECOND)
 roster.last_heartbeat(7)             # => 1000000000
 ```
 
-Until a peer has `min_samples` intervals on record, the roster has no basis for a phi and says so with a `WarmingUp`: the `samples` it has, the number `required`, and the `silence` since the last heartbeat. It does not guess. A peer that sends one heartbeat and vanishes stays warming up forever, so put a plain timeout of your own on that `silence` (or on `last_heartbeat`) for peers that never finish warming up.
+Until a peer has `min_samples` intervals on record, the roster has no basis for a phi and says so with a `WarmingUp`: the `samples` it has, the number `required`, and the `silence` since the last heartbeat. It does not guess. A peer that sends one heartbeat and vanishes stays warming up forever; give the config a warm-up ceiling (below) and `scan` names it once its silence passes the ceiling.
 
 ### Suspicion
 
@@ -184,15 +184,24 @@ roster.config == config       # => true
 
 If your peers are known to stall for a garbage collection or a fsync, give them that much silence for free. Suspicion starts accruing after the pause. `Config.new` takes the two arguments of the core's `Config::new` and tolerates no pause; `with_acceptable_pause` answers a copy that does, as the core's builder does.
 
+### Warm-up ceiling
+
+```ruby
+config = SM::Config.new(:exponential, 3).with_warm_up_ceiling(30 * SECOND)
+config.warm_up_ceiling        # => 30000000000
+```
+
+`scan` lists a peer still warming up once its silence exceeds the ceiling, as a `Suspect` whose `suspicion` is the `WarmingUp`. Without a ceiling (`Config.new` sets none) a warm-up peer is never listed.
+
 ### Scan
 
 ```ruby
 scan = roster.scan(now, SM::Threshold.new(8.0), 0, 64)   # now, threshold, cursor, limit
-scan.suspects.first.phi.value   # => 23.118053405486076, for peer 7, incarnation 1
+scan.suspects.first.suspicion.phi.value   # => 23.118053405486076, for peer 7, incarnation 1
 scan.next          # => nil
 ```
 
-`scan` lists every measured peer whose phi has reached the threshold, as a `Scan`. All four arguments are required, as they are in the core: the instant, the threshold, the cursor to start from (zero the first time) and the `limit`, which stands for the length of the buffer the core writes into and is at most `Roster::CAPACITY`. It returns at most `limit` suspects, and `next` is the cursor to resume from when there are more. A peer whose last heartbeat is later than `now` has no silence to measure at that instant and is skipped, not refused (`suspicion` for that peer answers `:time_regression`):
+`scan` lists every measured peer whose phi has reached the threshold, and every warm-up peer silent past the ceiling, as a `Scan`; each `Suspect` carries its `Measured` or `WarmingUp`. All four arguments are required, as they are in the core: the instant, the threshold, the cursor to start from (zero the first time) and the `limit`, which stands for the length of the buffer the core writes into and is at most `Roster::CAPACITY`. It returns at most `limit` suspects, and `next` is the cursor to resume from when there are more. A peer whose last heartbeat is later than `now` has no silence to measure at that instant and is skipped, not refused (`suspicion` for that peer answers `:time_regression`):
 
 ```ruby
 page = roster.scan(now, act_at, 0, 16)
@@ -301,7 +310,7 @@ A heartbeat is the observation of `now` itself, so every honoured heartbeat answ
 
 The six refusal symbols are the six variants of the core's `Refusal`, each with its own symbol; there is no catch-all. One of them, `:overflow`, cannot be reached from Ruby: it is the core's answer to a time past `2**64-1` nanoseconds, and such an Integer raises `RangeError` before the core sees it. It is what `heartbeat`, `suspicion` and `scan` would answer. A roster's `suspicion` never answers `:no_heartbeat`, because a tracked peer always has a heartbeat.
 
-`Phi`, `Threshold`, `Normal`, `Config`, `Recorded`, `WarmingUp`, `Measured`, `Statistics`, `Suspect` and `Scan` are frozen `Data` values with the fields of the core types they are named after. Each is checked by the core when it is built, whether the gem built it or you did (and by `with`): a wrong type raises `TypeError`, a value the core would never hold raises `RangeError`. So `Phi.new(-1)`, `Threshold.new(0)`, `Recorded.new(0, 1)` (a zero interval), `WarmingUp.new(3, 3, 0)` (the warm-up is over), `Statistics.new(1, 1.0, 0.0, 2, 1)` (min above max), `Statistics.new(2, 5.0, 0.0, 10, 20)` (a mean below the shortest interval), `Normal.new(0)` (no floor) and `Scan.new([], 64)` (no such slot) all raise `RangeError`; `Measured.new(1.0)` and `Suspect.new(1, 0, 4.0)` raise `TypeError`, because a phi is a `Phi`. The limits are the core's constructors for the compiled window and capacity: `Normal::new`, `Beat::recorded`, `Suspicion::warming_up`, `Statistics::new` and `Scan::new`. The classes are final: subclassing one raises `TypeError` and `allocate` is gone, so no instance skips the check. Sealing stops accidents, not reflection (a named subclass's constant is bound before `inherited` raises, and `Marshal.load` skips `initialize`), so the binding trusts no value it reads: each must be an instance of exactly the gem's class (a subclass raises `TypeError`) and is rebuilt through the core's constructor (a forged field raises `RangeError`). The classes are resolved once, at load. Building an answer runs Ruby code (`new`), so `heartbeat` (on a `Detector` and a `Roster`) decides on a copy, builds the answer, and keeps the copy only if the object is still unfrozen and unchanged: if building raises, the heartbeat is not recorded; if it freezes the object, `FrozenError`; if it re-enters and changes the object, `RuntimeError`, and the outer call is not applied. An enum's unit variant is a symbol and a variant that carries something is a `Data` named after it: a distribution is `:exponential` or a `Normal`, a beat is `:first`, a `Recorded` or `:restarted`, a suspicion is `:no_heartbeat`, a `WarmingUp` or a `Measured`. A phi and a threshold are the core's `Phi` and `Threshold`, as `Data` values carrying a Float `value`. A `Scan`'s `suspects` are the suspects themselves, where the core's `Scan::suspects` counts how many it wrote to the caller's buffer. `Roster#size` is the core's `len`.
+`Phi`, `Threshold`, `Normal`, `Config`, `Recorded`, `WarmingUp`, `Measured`, `Statistics`, `Suspect` and `Scan` are frozen `Data` values with the fields of the core types they are named after. Each is checked by the core when it is built, whether the gem built it or you did (and by `with`): a wrong type raises `TypeError`, a value the core would never hold raises `RangeError`. So `Phi.new(-1)`, `Threshold.new(0)`, `Recorded.new(0, 1)` (a zero interval), `WarmingUp.new(3, 3, 0)` (the warm-up is over), `Statistics.new(1, 1.0, 0.0, 2, 1)` (min above max), `Statistics.new(2, 5.0, 0.0, 10, 20)` (a mean below the shortest interval), `Normal.new(0)` (no floor) and `Scan.new([], 64)` (no such slot) all raise `RangeError`; `Measured.new(1.0)` raises `TypeError`, because a phi is a `Phi`, and `Suspect.new(1, 0, 4.0)` does too, because a suspect's `suspicion` is a `Measured` or a `WarmingUp`. The limits are the core's constructors for the compiled window and capacity: `Normal::new`, `Beat::recorded`, `Suspicion::warming_up`, `Statistics::new` and `Scan::new`. The classes are final: subclassing one raises `TypeError` and `allocate` is gone, so no instance skips the check. Sealing stops accidents, not reflection (a named subclass's constant is bound before `inherited` raises, and `Marshal.load` skips `initialize`), so the binding trusts no value it reads: each must be an instance of exactly the gem's class (a subclass raises `TypeError`) and is rebuilt through the core's constructor (a forged field raises `RangeError`). The classes are resolved once, at load. Building an answer runs Ruby code (`new`), so `heartbeat` (on a `Detector` and a `Roster`) decides on a copy, builds the answer, and keeps the copy only if the object is still unfrozen and unchanged: if building raises, the heartbeat is not recorded; if it freezes the object, `FrozenError`; if it re-enters and changes the object, `RuntimeError`, and the outer call is not applied. An enum's unit variant is a symbol and a variant that carries something is a `Data` named after it: a distribution is `:exponential` or a `Normal`, a beat is `:first`, a `Recorded` or `:restarted`, a suspicion is `:no_heartbeat`, a `WarmingUp` or a `Measured`. A phi and a threshold are the core's `Phi` and `Threshold`, as `Data` values carrying a Float `value`. A `Scan`'s `suspects` are the suspects themselves, where the core's `Scan::suspects` counts how many it wrote to the caller's buffer. `Roster#size` is the core's `len`.
 
 ## The Rules of the Picket
 

@@ -18,12 +18,12 @@ class RosterTest < Minitest::Test
     assert_equal %i[value], SuspectMachines::Phi.members
     assert_equal %i[value], SuspectMachines::Threshold.members
     assert_equal %i[min_std_dev], Normal.members
-    assert_equal %i[distribution min_samples acceptable_pause], Config.members
+    assert_equal %i[distribution min_samples acceptable_pause warm_up_ceiling], Config.members
     assert_equal %i[interval samples], Recorded.members
     assert_equal %i[samples required silence], WarmingUp.members
     assert_equal %i[phi], Measured.members
     assert_equal %i[samples mean_ns std_dev_ns min max], SuspectMachines::Statistics.members
-    assert_equal %i[peer incarnation phi], SuspectMachines::Suspect.members
+    assert_equal %i[peer incarnation suspicion], SuspectMachines::Suspect.members
     assert_equal %i[suspects next], SuspectMachines::Scan.members
   end
 
@@ -139,7 +139,7 @@ class RosterTest < Minitest::Test
     assert_nil scan.next
     assert_equal [0, 1, 2, 3], scan.suspects.map(&:peer)
     assert_equal [0, 1, 2, 3], scan.suspects.map(&:incarnation)
-    assert_in_delta 10 / Math.log(10), scan.suspects.first.phi.value, 1e-12
+    assert_in_delta 10 / Math.log(10), scan.suspects.first.suspicion.phi.value, 1e-12
     assert_instance_of SuspectMachines::Suspect, scan.suspects.first
 
     page = roster.scan(120, level(3), 0, 3)
@@ -151,6 +151,24 @@ class RosterTest < Minitest::Test
     assert_empty roster.scan(120, level(1e6), 0, 64).suspects
     assert roster.scan(120, level(3), 0, 64).frozen?
     assert roster.scan(120, level(3), 0, 64).suspects.frozen?
+  end
+
+  def test_scan_lists_warm_up_peers_silent_past_the_ceiling
+    config = Config.new(:exponential, 3).with_warm_up_ceiling(30)
+    assert_equal 30, config.warm_up_ceiling
+    assert_nil Config.new(:exponential, 3).warm_up_ceiling
+    roster = SuspectMachines::Roster.new(config)
+    roster.heartbeat(1, 0, 0)
+    roster.heartbeat(2, 5, 0)
+    roster.heartbeat(2, 5, 10)
+    assert_empty roster.scan(30, level(50.0), 0, 64).suspects
+    scan = roster.scan(41, level(50.0), 0, 64)
+    expected = [SuspectMachines::Suspect.new(1, 0, WarmingUp.new(0, 3, 41)),
+                SuspectMachines::Suspect.new(2, 5, WarmingUp.new(1, 3, 31))]
+    assert_equal expected, scan.suspects
+    plain = exponential(min_samples: 3)
+    plain.heartbeat(1, 0, 0)
+    assert_empty plain.scan(2**63, level(50.0), 0, 64).suspects
   end
 
   def test_strict_inputs_raise_before_mutation
@@ -210,7 +228,15 @@ class RosterTest < Minitest::Test
     assert_raises(TypeError) { config.with_acceptable_pause(1.5) }
     assert_raises(RangeError) { config.with_acceptable_pause(2**64) }
     assert_raises(RangeError) { config.with_acceptable_pause(-1) }
-    assert_raises(NoMethodError) { Config.__build(:exponential, 1, 0) }
+    ceiled = config.with_warm_up_ceiling(9)
+    assert_equal [Normal.new(5), 3, 0, 9], ceiled.to_h.values
+    assert_nil config.warm_up_ceiling
+    assert_raises(TypeError) { config.with_warm_up_ceiling(nil) }
+    assert_raises(TypeError) { config.with_warm_up_ceiling(1.5) }
+    assert_raises(RangeError) { config.with_warm_up_ceiling(2**64) }
+    assert_raises(RangeError) { config.with_warm_up_ceiling(-1) }
+    assert_raises(TypeError) { config.with(warm_up_ceiling: false) }
+    assert_raises(NoMethodError) { Config.__build(:exponential, 1, 0, nil) }
     assert_raises(NoMethodError) { config.__validate }
 
     assert_raises(RangeError) { normal(min_samples: 129) }

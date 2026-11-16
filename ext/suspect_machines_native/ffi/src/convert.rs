@@ -3,15 +3,15 @@ use std::time::Duration;
 
 use magnus::{Error, Ruby, Value, prelude::*};
 use matryona_machines::ruby::{
-    Choice, Refused, SymbolNames, duration, exact_fields, integer, nanoseconds,
-    symbol_or_fields_why,
+    Choice, Refused, SymbolNames, duration, exact_fields, integer, nanoseconds, optional,
+    symbol_or_fields_why, which_struct,
 };
 use suspect_machines::{
     Beat, Config, ConfigError, Distribution, Normal, Refusal, Statistics, Suspicion,
 };
 
 use crate::classes::classes;
-use crate::{phi_value, refusal};
+use crate::{WINDOW, phi_from, phi_value, range_error, refusal};
 
 /// A constructor error of the core, raised as `RangeError`. `DurationOverflow`
 /// and `ZeroWindow` cannot be reached from Ruby: times are `u64` nanoseconds
@@ -107,23 +107,35 @@ fn distribution_value(ruby: &Ruby, distribution: Distribution) -> Result<Value, 
 
 pub fn config(ruby: &Ruby, value: Value) -> Result<Config, Error> {
     let message = "expected a SuspectMachines::Config";
-    let [distribution, min_samples, pause] =
+    let [distribution, min_samples, pause, ceiling] =
         exact_fields(ruby, value, classes(ruby)?.config.get(ruby), message)?;
     let min_samples = integer(min_samples, "min_samples")?;
     let pause = duration(pause, "acceptable_pause")?;
-    config_from(ruby, distribution, min_samples, pause)
+    let ceiling = ceiling_from(ceiling)?;
+    config_from(ruby, distribution, min_samples, pause, ceiling)
 }
 
-/// The core's `Config::new` then `Config::with_acceptable_pause`.
+/// A warm-up ceiling: `nil` or Integer nanoseconds.
+pub fn ceiling_from(value: Value) -> Result<Option<Duration>, Error> {
+    let ceiling: Option<u64> = optional(value, "warm_up_ceiling")?;
+    Ok(ceiling.map(Duration::from_nanos))
+}
+
+/// The core's `Config::new`, `Config::with_acceptable_pause`, then
+/// `Config::with_warm_up_ceiling` when there is one.
 pub fn config_from(
     ruby: &Ruby,
     distribution: Value,
     min_samples: usize,
     pause: Duration,
+    ceiling: Option<Duration>,
 ) -> Result<Config, Error> {
     let distribution = self::distribution(ruby, distribution)?;
     Config::new(distribution, min_samples)
         .and_then(|config| config.with_acceptable_pause(pause))
+        .and_then(|config| {
+            ceiling.map_or(Ok(config), |ceiling| config.with_warm_up_ceiling(ceiling))
+        })
         .map_err(|error| config_error(ruby, error))
 }
 
@@ -134,6 +146,9 @@ pub fn config_value(ruby: &Ruby, config: Config) -> Result<Value, Error> {
             distribution_value(ruby, config.distribution())?,
             config.min_samples(),
             nanoseconds(ruby, config.acceptable_pause()),
+            config
+                .warm_up_ceiling()
+                .map(|ceiling| nanoseconds(ruby, ceiling)),
         ),
     )
 }
@@ -151,24 +166,51 @@ pub fn beat(ruby: &Ruby, outcome: Result<Beat, Refusal>) -> Result<Value, Error>
     }
 }
 
+/// The core's `Suspicion` a `Suspect` carries, rebuilt from a `WarmingUp`
+/// or a `Measured` read by its exact class and checked again.
+pub fn suspect_suspicion(ruby: &Ruby, value: Value) -> Result<Suspicion, Error> {
+    let message = "suspicion must be a SuspectMachines::WarmingUp or a SuspectMachines::Measured";
+    let classes = classes(ruby)?;
+    let held_by = [classes.warming_up.get(ruby), classes.measured.get(ruby)];
+    let (index, held) = which_struct(ruby, value, &held_by, message)?;
+    if index == 0 {
+        let [samples, required, silence] = held.fields::<3>(ruby, message)?;
+        let (samples, required) = (integer(samples, "samples")?, integer(required, "required")?);
+        let silence = duration(silence, "silence")?;
+        Suspicion::warming_up::<WINDOW>(samples, required, silence)
+            .ok_or_else(|| range_error(ruby, "a WarmingUp needs samples < required <= WINDOW"))
+    } else {
+        let [phi] = held.fields::<1>(ruby, message)?;
+        phi_from(ruby, phi).map(Suspicion::Measured)
+    }
+}
+
 pub fn suspicion(ruby: &Ruby, outcome: Result<Suspicion, Refusal>) -> Result<Value, Error> {
     match outcome {
-        Ok(Suspicion::NoHeartbeat) => {
+        Ok(suspicion) => suspicion_value(ruby, suspicion),
+        Err(refused) => Ok(refusal(ruby, refused)),
+    }
+}
+
+/// A suspicion as Ruby holds it: `:no_heartbeat`, a `WarmingUp` or a
+/// `Measured`, each built through `new`.
+pub fn suspicion_value(ruby: &Ruby, suspicion: Suspicion) -> Result<Value, Error> {
+    match suspicion {
+        Suspicion::NoHeartbeat => {
             Ok(Suspicions::symbol_of(ruby, Suspicion::NoHeartbeat).as_value())
         }
-        Ok(Suspicion::WarmingUp {
+        Suspicion::WarmingUp {
             samples,
             required,
             silence,
-        }) => classes(ruby)?
+        } => classes(ruby)?
             .warming_up
             .get(ruby)
             .funcall("new", (samples, required, nanoseconds(ruby, silence))),
-        Ok(Suspicion::Measured(phi)) => classes(ruby)?
+        Suspicion::Measured(phi) => classes(ruby)?
             .measured
             .get(ruby)
             .funcall("new", (phi_value(ruby, phi)?,)),
-        Err(refused) => Ok(refusal(ruby, refused)),
     }
 }
 

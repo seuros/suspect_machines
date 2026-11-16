@@ -103,6 +103,7 @@ pub struct Model {
 pub enum Expected {
     Refused,
     Undefined,
+    WarmingUp(u64),
     Phi(f64),
 }
 
@@ -151,7 +152,7 @@ impl Model {
             return Expected::Refused;
         }
         if self.intervals.len() < config.min_samples() {
-            return Expected::Undefined;
+            return Expected::WarmingUp(now - last);
         }
         let silence = (now - last) as f64;
         let pause = config.acceptable_pause().as_nanos() as f64;
@@ -174,9 +175,15 @@ pub fn random_config(rng: &mut XorShift64, window: usize) -> Config {
     } else {
         exponential(min_samples)
     };
-    config
+    let config = config
         .with_acceptable_pause(at(rng.below(3) * rng.below(200 * MILLI)))
-        .expect("a pause that fits u64 nanoseconds")
+        .expect("a pause that fits u64 nanoseconds");
+    if rng.below(2) == 0 {
+        return config;
+    }
+    config
+        .with_warm_up_ceiling(at(rng.below(2 * SECOND)))
+        .expect("a ceiling that fits u64 nanoseconds")
 }
 
 /// A step that is usually a plausible heartbeat gap, sometimes zero.

@@ -34,24 +34,27 @@ module SuspectMachines
   end
 
   # Detector policy. `Config.new(distribution, min_samples)` is the core's
-  # constructor and tolerates no pause; `with_acceptable_pause` answers a copy
-  # that does. `distribution` is :exponential or a Normal.
-  Config = Data.define(:distribution, :min_samples, :acceptable_pause) do
+  # constructor and tolerates no pause and no warm-up ceiling;
+  # `with_acceptable_pause` and `with_warm_up_ceiling` answer a copy with one.
+  # `distribution` is :exponential or a Normal; `warm_up_ceiling` is nil or
+  # Integer nanoseconds.
+  Config = Data.define(:distribution, :min_samples, :acceptable_pause, :warm_up_ceiling) do
     class << self
       alias_method :__build, :new
       private :__build
 
-      def new(distribution, min_samples) = __build(distribution, min_samples, 0)
+      def new(distribution, min_samples) = __build(distribution, min_samples, 0, nil)
     end
 
-    def initialize(distribution:, min_samples:, acceptable_pause:)
-      distribution, min_samples, acceptable_pause =
-        SuspectMachines.__send__(:__config, distribution, min_samples, acceptable_pause)
+    def initialize(distribution:, min_samples:, acceptable_pause:, warm_up_ceiling:)
+      distribution, min_samples, acceptable_pause, warm_up_ceiling =
+        SuspectMachines.__send__(:__config, distribution, min_samples, acceptable_pause, warm_up_ceiling)
       super
     end
 
-    # `with_acceptable_pause(pause)` is native: the core's
-    # `Config::with_acceptable_pause` on this config, read from the struct by
+    # `with_acceptable_pause(pause)` and `with_warm_up_ceiling(ceiling)` are
+    # native: the core's `Config::with_acceptable_pause` and
+    # `Config::with_warm_up_ceiling` on this config, read from the struct by
     # its exact class (never through the readers) and checked again.
   end
 
@@ -92,10 +95,11 @@ module SuspectMachines
     end
   end
 
-  # A peer whose phi reached the scan threshold.
-  Suspect = Data.define(:peer, :incarnation, :phi) do
-    def initialize(peer:, incarnation:, phi:)
-      peer, incarnation, phi = SuspectMachines.__send__(:__suspect, peer, incarnation, phi)
+  # A peer a scan lists: `suspicion` is a Measured whose phi reached the
+  # threshold, or a WarmingUp silent past the config's warm-up ceiling.
+  Suspect = Data.define(:peer, :incarnation, :suspicion) do
+    def initialize(peer:, incarnation:, suspicion:)
+      peer, incarnation, suspicion = SuspectMachines.__send__(:__suspect, peer, incarnation, suspicion)
       super
     end
   end

@@ -10,7 +10,7 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     module.define_singleton_method("__phi", function!(values::phi_level, 1))?;
     module.define_singleton_method("__threshold", function!(values::threshold_level, 1))?;
     module.define_singleton_method("__normal", function!(values::normal, 1))?;
-    module.define_singleton_method("__config", function!(values::config, 3))?;
+    module.define_singleton_method("__config", function!(values::config, 4))?;
     module.define_singleton_method("__recorded", function!(values::recorded, 2))?;
     module.define_singleton_method("__warming_up", function!(values::warming_up, 3))?;
     module.define_singleton_method("__measured", function!(values::measured, 1))?;
@@ -22,6 +22,10 @@ fn init(ruby: &Ruby) -> Result<(), Error> {
     config.define_method(
         "with_acceptable_pause",
         method!(values::with_acceptable_pause, 1),
+    )?;
+    config.define_method(
+        "with_warm_up_ceiling",
+        method!(values::with_warm_up_ceiling, 1),
     )?;
     let phi = resolved.phi.get(ruby);
     phi.define_method("millis", method!(values::millis, 0))?;

@@ -77,11 +77,27 @@ fn answer_constructors_hold_what_a_window_and_a_roster_can_answer() {
     for (suspects, next) in [(5, None), (0, Some(4))] {
         assert_eq!(Scan::new::<4>(suspects, next), None);
     }
-    let suspect = Suspect::new(u64::MAX, 0, Phi::new(4.0).expect("finite"));
+    let phi = Suspicion::Measured(Phi::new(4.0).expect("finite"));
+    let suspect = Suspect::new(u64::MAX, 0, phi).expect("a measured suspect");
     assert_eq!(
-        (suspect.peer(), suspect.incarnation(), suspect.phi().value()),
-        (u64::MAX, 0, 4.0)
+        (suspect.peer(), suspect.incarnation(), suspect.suspicion()),
+        (u64::MAX, 0, phi)
     );
+    let silent = Suspicion::WarmingUp {
+        samples: 1,
+        required: 2,
+        silence: at(9),
+    };
+    let warm_up = Suspect::new(3, 1, silent).expect("a warm-up suspect");
+    assert_eq!(warm_up.suspicion(), silent);
+    let over = Suspicion::WarmingUp {
+        samples: 2,
+        required: 2,
+        silence: at(9),
+    };
+    for refused in [Suspicion::NoHeartbeat, over] {
+        assert_eq!(Suspect::new(3, 1, refused), None);
+    }
 }
 
 /// Every answer of a detector and a roster over random schedules is a value
@@ -90,7 +106,11 @@ fn answer_constructors_hold_what_a_window_and_a_roster_can_answer() {
 fn answered_values_pass_their_constructors() {
     let mut rng = XorShift64::new(0x5EED);
     let mut single = detector::<8>(normal(1, 3));
-    let mut table = roster::<4, 8>(exponential(2));
+    let mut table = roster::<4, 8>(
+        exponential(2)
+            .with_warm_up_ceiling(at(20))
+            .expect("a ceiling that fits u64 nanoseconds"),
+    );
     let mut now = 0;
     for _ in 0..2_000 {
         now += 1 + rng.next_u64() % 50;
@@ -134,6 +154,10 @@ fn answered_values_pass_their_constructors() {
             .scan(at(now + 7), threshold(0.5), cursor, &mut out)
             .expect("an instant that fits u64 nanoseconds");
         assert_eq!(Scan::new::<4>(scan.suspects(), scan.next()), Some(scan));
+        for suspect in out.iter().take(scan.suspects()) {
+            let rebuilt = Suspect::new(suspect.peer(), suspect.incarnation(), suspect.suspicion());
+            assert_eq!(rebuilt, Some(*suspect));
+        }
         if rng.next_u64().is_multiple_of(40) {
             let tracked = table.incarnation(peer).is_some();
             assert_eq!(table.forget(peer) == Forgetting::Forgotten, tracked);

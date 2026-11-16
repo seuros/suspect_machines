@@ -6,7 +6,7 @@ use matryona_machines::ruby::{Symbols, duration, integer, integer_in, keep, nano
 use suspect_machines::{Forgetting, Roster as Core, Suspect};
 
 use crate::classes::classes;
-use crate::{CAPACITY, WINDOW, convert, phi_value, refusal, threshold_from};
+use crate::{CAPACITY, WINDOW, convert, refusal, threshold_from};
 
 matryona_machines::symbols! {
     /// What `forget` answers.
@@ -78,8 +78,9 @@ impl Roster {
         };
         let suspects = ruby.ary_new_capa(scan.suspects());
         for found in out.iter().take(scan.suspects()) {
-            let phi = phi_value(ruby, found.phi())?;
-            let entry: Value = suspect.funcall("new", (found.peer(), found.incarnation(), phi))?;
+            let suspicion = convert::suspicion_value(ruby, found.suspicion())?;
+            let entry: Value =
+                suspect.funcall("new", (found.peer(), found.incarnation(), suspicion))?;
             suspects.push(entry)?;
         }
         scan_class.funcall("new", (suspects, scan.next()))

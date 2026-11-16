@@ -93,10 +93,14 @@ class ValuesTest < Minitest::Test
     assert_raises(RangeError) { Statistics.new(1, 15.0, 0.0, 10, 20) }
     assert_equal 0.0, Statistics.new(1, 7, 0, 7, 7).std_dev_ns
 
-    suspect = Suspect.new(MAX, 0, phi(4))
-    assert_equal [MAX, 0, phi(4)], suspect.to_h.values
+    suspect = Suspect.new(MAX, 0, Measured.new(phi(4)))
+    assert_equal [MAX, 0, Measured.new(phi(4))], suspect.to_h.values
+    silent = Suspect.new(1, 0, WarmingUp.new(0, 3, 9))
+    assert_equal WarmingUp.new(0, 3, 9), silent.suspicion
     assert_raises(TypeError) { Suspect.new(1, 0, 4.0) }
-    assert_raises(RangeError) { Suspect.new(-1, 0, phi(4)) }
+    assert_raises(TypeError) { Suspect.new(1, 0, phi(4)) }
+    assert_raises(TypeError) { Suspect.new(1, 0, :no_heartbeat) }
+    assert_raises(RangeError) { Suspect.new(-1, 0, Measured.new(phi(4))) }
 
     list = [suspect]
     scan = Scan.new(list, 63)
@@ -148,12 +152,12 @@ class ValuesTest < Minitest::Test
     [ForgedConfig, ForgedThreshold, ForgedPhi].each do |forgery|
       forgery.define_method(:initialize) { |**kw| Data.instance_method(:initialize).bind_call(self, **kw) }
     end
-    assert_raises(TypeError) { Detector.new(ForgedConfig.send(:__build, :exponential, 0, 0)) }
+    assert_raises(TypeError) { Detector.new(ForgedConfig.send(:__build, :exponential, 0, 0, nil)) }
     roster = Roster.new(Config.new(:exponential, 1))
     assert_raises(TypeError) { roster.scan(0, ForgedThreshold.new(value: -1.0), 0, 1) }
     assert_raises(TypeError) { Measured.new(ForgedPhi.new(value: -1.0)) }
     assert_raises(TypeError) { phi(1).reaches?(ForgedThreshold.new(value: 0.5)) }
-    error = assert_raises(TypeError) { ForgedConfig.send(:__build, :exponential, 1, 0).with_acceptable_pause(5) }
+    error = assert_raises(TypeError) { ForgedConfig.send(:__build, :exponential, 1, 0, nil).with_acceptable_pause(5) }
     assert_equal 'expected a SuspectMachines::Config', error.message
   ensure
     %i[ForgedConfig ForgedThreshold ForgedPhi].each do |name|
@@ -174,16 +178,18 @@ class ValuesTest < Minitest::Test
   def test_a_redefined_reader_is_ignored
     config = Config.new(Normal.new(1), 1)
     level = Threshold.new(0.5)
-    listed = [Suspect.new(1, 0, phi(1.0))]
-    readers = { Config => %i[distribution min_samples acceptable_pause], Normal => %i[min_std_dev],
-                Threshold => %i[value], Phi => %i[value], Suspect => %i[peer incarnation phi] }
+    listed = [Suspect.new(1, 0, Measured.new(phi(1.0))), Suspect.new(2, 0, WarmingUp.new(0, 1, 5))]
+    readers = { Config => %i[distribution min_samples acceptable_pause warm_up_ceiling], Normal => %i[min_std_dev],
+                Threshold => %i[value], Phi => %i[value], Suspect => %i[peer incarnation suspicion],
+                Measured => %i[phi], WarmingUp => %i[samples required silence] }
     redefined(readers) do
       assert_equal :first, Detector.new(config).heartbeat(0)
       roster = Roster.new(config)
       assert_equal Scan.new([], nil), roster.scan(0, level, 0, 1)
-      assert_equal 1, Scan.new(listed, nil).suspects.size
+      assert_equal 2, Scan.new(listed, nil).suspects.size
       assert phi(1.0).reaches?(level)
-      assert_equal Config.send(:__build, Normal.new(1), 1, 7), config.with_acceptable_pause(7)
+      assert_equal Config.send(:__build, Normal.new(1), 1, 7, nil), config.with_acceptable_pause(7)
+      assert_equal Config.send(:__build, Normal.new(1), 1, 0, 3), config.with_warm_up_ceiling(3)
     end
   end
 
@@ -196,14 +202,18 @@ class ValuesTest < Minitest::Test
   end
 
   def test_a_marshal_forged_value_never_reaches_the_core
-    assert_raises(RangeError) { Detector.new(forged(Config, :exponential, 0, 0)) }
+    assert_raises(RangeError) { Detector.new(forged(Config, :exponential, 0, 0, nil)) }
     assert_raises(RangeError) { Detector.new(Config.new(forged(Normal, 0), 1)) }
-    assert_raises(RangeError) { forged(Config, :exponential, 0, 0).with_acceptable_pause(5) }
-    assert_raises(RangeError) { forged(Config, forged(Normal, 0), 1, 0).with_acceptable_pause(5) }
+    assert_raises(RangeError) { forged(Config, :exponential, 0, 0, nil).with_acceptable_pause(5) }
+    assert_raises(RangeError) { forged(Config, forged(Normal, 0), 1, 0, nil).with_acceptable_pause(5) }
+    assert_raises(RangeError) { Detector.new(forged(Config, :exponential, 1, 0, -1)) }
+    assert_raises(TypeError) { forged(Config, :exponential, 1, 0, 1.5).with_warm_up_ceiling(5) }
     roster = Roster.new(Config.new(:exponential, 1))
     assert_raises(RangeError) { roster.scan(0, forged(Threshold, -1.0), 0, 1) }
     assert_raises(RangeError) { Measured.new(forged(Phi, Float::NAN)) }
-    assert_raises(RangeError) { Scan.new([forged(Suspect, 1, 0, forged(Phi, -1.0))], nil) }
+    assert_raises(TypeError) { Scan.new([forged(Suspect, 1, 0, forged(Phi, -1.0))], nil) }
+    assert_raises(RangeError) { Scan.new([forged(Suspect, 1, 0, forged(Measured, forged(Phi, -1.0)))], nil) }
+    assert_raises(RangeError) { Scan.new([forged(Suspect, 1, 0, forged(WarmingUp, 3, 3, 1))], nil) }
     assert_equal 0, roster.size
   end
 

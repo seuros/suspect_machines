@@ -19,25 +19,45 @@ fn holds<const W: usize>(entry: Option<&Slot<W>>, peer: u64) -> bool {
     entry.is_some_and(|slot| slot.peer == peer)
 }
 
-/// A peer whose phi has reached the scan threshold.
+/// A peer a scan lists: its phi reached the threshold
+/// ([`Suspicion::Measured`]), or it is still warming up and silent past the
+/// warm-up ceiling ([`Suspicion::WarmingUp`]).
 ///
 /// `Suspect::default()` is a placeholder for pre-filling a scan buffer; the
 /// roster never emits it.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Suspect {
     peer: u64,
     incarnation: u64,
-    phi: Phi,
+    suspicion: Suspicion,
+}
+
+impl Default for Suspect {
+    fn default() -> Self {
+        Self {
+            peer: 0,
+            incarnation: 0,
+            suspicion: Suspicion::Measured(Phi(0.0)),
+        }
+    }
 }
 
 impl Suspect {
-    /// A suspect: any peer and incarnation, and its level.
+    /// A suspect: any peer and incarnation, and why it is listed. `None` for
+    /// [`Suspicion::NoHeartbeat`] (a tracked peer has a heartbeat) and for a
+    /// warm-up that is already over (`samples >= required`).
     #[must_use]
-    pub const fn new(peer: u64, incarnation: u64, phi: Phi) -> Self {
-        Self {
-            peer,
-            incarnation,
-            phi,
+    pub const fn new(peer: u64, incarnation: u64, suspicion: Suspicion) -> Option<Self> {
+        match suspicion {
+            Suspicion::NoHeartbeat => None,
+            Suspicion::WarmingUp {
+                samples, required, ..
+            } if samples >= required => None,
+            Suspicion::WarmingUp { .. } | Suspicion::Measured(_) => Some(Self {
+                peer,
+                incarnation,
+                suspicion,
+            }),
         }
     }
 
@@ -53,10 +73,10 @@ impl Suspect {
         self.incarnation
     }
 
-    /// Suspicion level at the scan instant.
+    /// Why the peer is listed, at the scan instant.
     #[must_use]
-    pub const fn phi(&self) -> Phi {
-        self.phi
+    pub const fn suspicion(&self) -> Suspicion {
+        self.suspicion
     }
 }
 
@@ -214,7 +234,9 @@ impl<const P: usize, const W: usize> Roster<P, W> {
     /// examining slots from `cursor` (zero to start). When a suspect does not
     /// fit, the scan stops and [`Scan::next`] names the slot to resume from.
     ///
-    /// Peers still warming up have no phi and are never listed. Neither are
+    /// Peers still warming up have no phi: they are listed as
+    /// [`Suspicion::WarmingUp`] once their silence exceeds the
+    /// [`Config::warm_up_ceiling`], and never without one. Never listed are
     /// peers whose last heartbeat is later than `now`: [`Roster::suspicion`]
     /// refuses them with [`Refusal::TimeRegression`], but one peer's later
     /// heartbeat says nothing about the others, so the scan skips that peer
@@ -234,10 +256,15 @@ impl<const P: usize, const W: usize> Roster<P, W> {
         let mut suspects = 0;
         for (index, slot) in self.slots.iter().enumerate().skip(cursor) {
             let Some(slot) = slot else { continue };
-            let phi = match slot.window.suspicion(&self.config, now) {
-                Some(Suspicion::Measured(phi)) if phi.reaches(threshold) => phi,
-                // Below the threshold, or no phi yet (a tracked peer always
-                // has a heartbeat, so this is a warm-up).
+            let suspicion = match slot.window.suspicion(&self.config, now) {
+                Some(measured @ Suspicion::Measured(phi)) if phi.reaches(threshold) => measured,
+                Some(warm_up @ Suspicion::WarmingUp { silence, .. })
+                    if self.config.outlasts_warm_up(silence) =>
+                {
+                    warm_up
+                }
+                // Below the threshold, or a warm-up within its ceiling (a
+                // tracked peer always has a heartbeat).
                 Some(Suspicion::Measured(_) | Suspicion::WarmingUp { .. } | Suspicion::NoHeartbeat)
                 // The peer's last heartbeat is later than `now`: skipped,
                 // as documented above.
@@ -249,7 +276,11 @@ impl<const P: usize, const W: usize> Roster<P, W> {
                     next: Some(index),
                 });
             };
-            *entry = Suspect::new(slot.peer, slot.incarnation, phi);
+            *entry = Suspect {
+                peer: slot.peer,
+                incarnation: slot.incarnation,
+                suspicion,
+            };
             suspects += 1;
         }
         Ok(Scan {

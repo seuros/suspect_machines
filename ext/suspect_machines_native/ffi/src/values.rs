@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use magnus::{Error, RArray, Ruby, Value, prelude::*};
 use matryona_machines::ruby::{exact_array, exact_fields, finite, integer, optional};
-use suspect_machines::{Beat, Scan, Statistics, Suspicion};
+use suspect_machines::{Beat, Scan, Statistics, Suspect, Suspicion};
 
 use crate::classes::classes;
 use crate::{CAPACITY, WINDOW, convert, phi, phi_from, range_error, threshold, threshold_from};
@@ -38,18 +38,27 @@ pub fn normal(ruby: &Ruby, min_std_dev: Value) -> Result<u64, Error> {
     convert::normal(ruby, Duration::from_nanos(floor)).map(|_| floor)
 }
 
-/// `Config.new` and `with_acceptable_pause`: the core's `Config::new` and
-/// `Config::with_acceptable_pause`.
+/// `Config.new`, `with_acceptable_pause` and `with_warm_up_ceiling`: the
+/// core's `Config::new`, `Config::with_acceptable_pause` and
+/// `Config::with_warm_up_ceiling`.
 pub fn config(
     ruby: &Ruby,
     distribution: Value,
     min_samples: Value,
     pause: Value,
-) -> Result<(Value, usize, u64), Error> {
+    ceiling: Value,
+) -> Result<(Value, usize, u64, Value), Error> {
     let min_samples = integer(min_samples, "min_samples")?;
     let pause: u64 = integer(pause, "acceptable_pause")?;
-    convert::config_from(ruby, distribution, min_samples, Duration::from_nanos(pause))?;
-    Ok((distribution, min_samples, pause))
+    let held = convert::ceiling_from(ceiling)?;
+    convert::config_from(
+        ruby,
+        distribution,
+        min_samples,
+        Duration::from_nanos(pause),
+        held,
+    )?;
+    Ok((distribution, min_samples, pause, ceiling))
 }
 
 /// `Config#with_acceptable_pause`: the core's `Config::with_acceptable_pause`
@@ -63,6 +72,17 @@ pub fn with_acceptable_pause(ruby: &Ruby, this: Value, pause: Value) -> Result<V
         .with_acceptable_pause(Duration::from_nanos(pause))
         .map_err(|error| convert::config_error(ruby, error))?;
     convert::config_value(ruby, paused)
+}
+
+/// `Config#with_warm_up_ceiling`: the core's `Config::with_warm_up_ceiling`
+/// on this config, read and revalidated as `with_acceptable_pause` does.
+pub fn with_warm_up_ceiling(ruby: &Ruby, this: Value, ceiling: Value) -> Result<Value, Error> {
+    let config = convert::config(ruby, this)?;
+    let ceiling: u64 = integer(ceiling, "warm_up_ceiling")?;
+    let ceiled = config
+        .with_warm_up_ceiling(Duration::from_nanos(ceiling))
+        .map_err(|error| convert::config_error(ruby, error))?;
+    convert::config_value(ruby, ceiled)
 }
 
 /// `Recorded.new`: the core's `Beat::recorded` for the compiled window.
@@ -125,16 +145,19 @@ pub fn statistics(
         })
 }
 
-/// `Suspect.new`: any `u64` peer and incarnation, and a `Phi`.
+/// `Suspect.new`: any `u64` peer and incarnation, and a `Measured` or a
+/// `WarmingUp`, as the core's `Suspect::new` accepts.
 pub fn suspect(
     ruby: &Ruby,
     peer: Value,
     incarnation: Value,
-    phi: Value,
+    suspicion: Value,
 ) -> Result<(u64, u64, Value), Error> {
     let (peer, incarnation) = (integer(peer, "peer")?, integer(incarnation, "incarnation")?);
-    phi_from(ruby, phi)?;
-    Ok((peer, incarnation, phi))
+    let held = convert::suspect_suspicion(ruby, suspicion)?;
+    Suspect::new(peer, incarnation, held)
+        .ok_or_else(|| range_error(ruby, "a Suspect is a Measured or an unfinished WarmingUp"))?;
+    Ok((peer, incarnation, suspicion))
 }
 
 /// `Scan.new`: an Array of `Suspect` and a resume cursor, as the core's
@@ -146,8 +169,8 @@ pub fn scan(ruby: &Ruby, suspects: Value, next: Value) -> Result<(RArray, Option
     let class = classes(ruby)?.suspect.get(ruby);
     for entry in list {
         let message = "suspects must be SuspectMachines::Suspect";
-        let [peer, incarnation, phi] = exact_fields(ruby, entry, class, message)?;
-        suspect(ruby, peer, incarnation, phi)?;
+        let [peer, incarnation, suspicion] = exact_fields(ruby, entry, class, message)?;
+        suspect(ruby, peer, incarnation, suspicion)?;
         copy.push(entry)?;
     }
     let cursor: Option<usize> = optional(next, "next")?;

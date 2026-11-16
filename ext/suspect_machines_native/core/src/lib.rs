@@ -75,12 +75,14 @@ pub enum ConfigError {
     WarmUpExceedsWindow,
 }
 
-/// Validated detector policy: distribution, warm-up and acceptable pause.
+/// Validated detector policy: distribution, warm-up, acceptable pause and
+/// warm-up ceiling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
     distribution: Distribution,
     min_samples: usize,
     pause_ns: u64,
+    ceiling_ns: Option<u64>,
 }
 
 impl Config {
@@ -98,6 +100,7 @@ impl Config {
             distribution,
             min_samples,
             pause_ns: 0,
+            ceiling_ns: None,
         })
     }
 
@@ -113,6 +116,24 @@ impl Config {
         match nanos(pause) {
             Some(pause_ns) => {
                 self.pause_ns = pause_ns;
+                Ok(self)
+            }
+            None => Err(ConfigError::DurationOverflow),
+        }
+    }
+
+    /// Lists a peer still warming up in [`Roster::scan`] once its silence
+    /// exceeds `ceiling`. A peer that falls silent before the warm-up ends
+    /// never earns a phi, so without a ceiling no scan names it.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::DurationOverflow`] when `ceiling` exceeds `u64`
+    /// nanoseconds.
+    pub const fn with_warm_up_ceiling(mut self, ceiling: Duration) -> Result<Self, ConfigError> {
+        match nanos(ceiling) {
+            Some(ceiling_ns) => {
+                self.ceiling_ns = Some(ceiling_ns);
                 Ok(self)
             }
             None => Err(ConfigError::DurationOverflow),
@@ -135,6 +156,24 @@ impl Config {
     #[must_use]
     pub const fn acceptable_pause(&self) -> Duration {
         Duration::from_nanos(self.pause_ns)
+    }
+
+    /// Silence past which a scan lists a peer still warming up; `None` when
+    /// no warm-up peer is ever listed.
+    #[must_use]
+    pub const fn warm_up_ceiling(&self) -> Option<Duration> {
+        match self.ceiling_ns {
+            Some(ceiling_ns) => Some(Duration::from_nanos(ceiling_ns)),
+            None => None,
+        }
+    }
+
+    /// Whether a warm-up `silence` is past the ceiling.
+    const fn outlasts_warm_up(&self, silence: Duration) -> bool {
+        match self.ceiling_ns {
+            Some(ceiling_ns) => silence.as_nanos() > ceiling_ns as u128,
+            None => false,
+        }
     }
 
     /// Checks the policy against a window of `window` intervals.

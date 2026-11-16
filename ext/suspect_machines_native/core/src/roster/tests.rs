@@ -97,7 +97,7 @@ fn scan_is_bounded_resumable_and_skips_peers_without_phi() {
     assert_eq!(all.map(|suspect| suspect.peer()), [0, 1, 2, 3, 0, 0]);
     assert_eq!(all[2].incarnation(), 2);
     let expected = 10.0 * std::f64::consts::LOG10_E;
-    assert!(close(all[0].phi().value(), expected, 1e-12));
+    assert!(close(phi_of(&all[0]), expected, 1e-12));
 
     let mut page = [Suspect::default(); 3];
     assert_eq!(
@@ -123,12 +123,125 @@ fn scan_is_bounded_resumable_and_skips_peers_without_phi() {
     );
 }
 
+fn phi_of(suspect: &Suspect) -> f64 {
+    let Suspicion::Measured(phi) = suspect.suspicion() else {
+        panic!("expected a measured suspect, got {suspect:?}");
+    };
+    phi.value()
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn silence_ns(silence: Duration) -> f64 {
+    silence.as_nanos() as f64
+}
+
+#[test]
+fn scan_lists_warm_up_peers_silent_past_the_ceiling() {
+    let ceiling = exponential(3)
+        .with_warm_up_ceiling(at(30))
+        .expect("a ceiling that fits u64 nanoseconds");
+    assert_eq!(ceiling.warm_up_ceiling(), Some(at(30)));
+    assert_eq!(exponential(3).warm_up_ceiling(), None);
+    let mut peers = roster::<4, 4>(ceiling);
+    // Peer 1 beats once and dies; peer 2 beats twice; peer 3 finishes its
+    // warm-up and keeps beating every 10 ns.
+    assert!(peers.heartbeat(1, 0, at(0)).is_ok());
+    assert!(peers.heartbeat(2, 5, at(0)).is_ok());
+    assert!(peers.heartbeat(2, 5, at(10)).is_ok());
+    for beat in 0..=4 {
+        assert!(peers.heartbeat(3, 0, at(beat * 10)).is_ok());
+    }
+    let limit = threshold(50.0);
+    let mut out = [Suspect::default(); 4];
+    let shape = |scan: Result<Scan, Refusal>| scan.map(|scan| (scan.suspects(), scan.next()));
+
+    // Exactly at the ceiling is not past it.
+    assert_eq!(shape(peers.scan(at(30), limit, 0, &mut out)), Ok((0, None)));
+    assert_eq!(shape(peers.scan(at(31), limit, 0, &mut out)), Ok((1, None)));
+    let first = Suspicion::WarmingUp {
+        samples: 0,
+        required: 3,
+        silence: at(31),
+    };
+    assert_eq!(Suspect::new(1, 0, first), Some(out[0]));
+
+    assert_eq!(shape(peers.scan(at(41), limit, 0, &mut out)), Ok((2, None)));
+    assert_eq!(out[1].peer(), 2);
+    assert_eq!(out[1].incarnation(), 5);
+    assert_eq!(
+        out[1].suspicion(),
+        Suspicion::WarmingUp {
+            samples: 1,
+            required: 3,
+            silence: at(31),
+        }
+    );
+    // Paging works the same for warm-up suspects.
+    let mut page = [Suspect::default(); 1];
+    assert_eq!(
+        shape(peers.scan(at(41), limit, 0, &mut page)),
+        Ok((1, Some(1)))
+    );
+    assert_eq!(
+        shape(peers.scan(at(41), limit, 1, &mut page)),
+        Ok((1, None))
+    );
+    assert_eq!(page[0].peer(), 2);
+
+    // The measured peer is listed only once phi reaches the threshold.
+    let late = at(40 + 1200);
+    assert_eq!(shape(peers.scan(late, limit, 0, &mut out)), Ok((3, None)));
+    assert_matches!(out[2].suspicion(), Suspicion::Measured(_));
+    // A restart starts a new warm-up, measured from the restart.
+    assert_eq!(peers.heartbeat(1, 1, at(1240)), Ok(Beat::Restarted));
+    assert_eq!(
+        shape(peers.scan(at(1270), limit, 0, &mut out)),
+        Ok((2, None))
+    );
+    assert_eq!([out[0].peer(), out[1].peer()], [2, 3]);
+    // Without a ceiling no warm-up peer is ever listed.
+    let mut plain = roster::<4, 4>(exponential(3));
+    assert!(plain.heartbeat(1, 0, at(0)).is_ok());
+    assert_eq!(
+        shape(plain.scan(Duration::from_secs(u64::MAX >> 40), limit, 0, &mut out)),
+        Ok((0, None))
+    );
+}
+
+/// The suspects the naive model expects a scan at `probe` to list, a warm-up
+/// suspect carrying its negated silence where a measured one carries phi.
+fn expected_suspects(
+    model: &[(u64, u64, Model)],
+    config: &Config,
+    limit: Threshold,
+    probe: u64,
+) -> Vec<(u64, u64, f64)> {
+    model
+        .iter()
+        .filter_map(
+            |(peer, incarnation, model)| match model.phi(config, probe) {
+                Expected::Phi(phi) => {
+                    // Leave a margin so rounding cannot flip membership.
+                    assert!(!close(phi, limit.value(), 1e-7), "ambiguous threshold");
+                    (phi >= limit.value()).then_some((*peer, *incarnation, phi))
+                }
+                Expected::WarmingUp(silence) => config
+                    .warm_up_ceiling()
+                    .is_some_and(|ceiling| at(silence) > ceiling)
+                    .then_some((*peer, *incarnation, -silence_ns(at(silence)))),
+                Expected::Refused | Expected::Undefined => None,
+            },
+        )
+        .collect()
+}
+
 #[test]
 fn roster_matches_naive_model_on_random_schedules() {
     const PEERS: usize = 6;
     const WINDOW: usize = 8;
     let mut rng = XorShift64::new(0x0B5E_27ED);
     let mut listed = 0;
+    let mut silent = 0;
     for _ in 0..12 {
         let config = random_config(&mut rng, WINDOW);
         let mut roster = roster::<PEERS, WINDOW>(config);
@@ -197,34 +310,31 @@ fn roster_matches_naive_model_on_random_schedules() {
                 let scan = roster
                     .scan(at(probe), limit, position, &mut page)
                     .expect("an instant that fits u64 nanoseconds");
-                found.extend(
-                    page.iter().take(scan.suspects()).map(|suspect| {
-                        (suspect.peer(), suspect.incarnation(), suspect.phi().value())
-                    }),
-                );
+                found.extend(page.iter().take(scan.suspects()).map(|suspect| {
+                    let level = match suspect.suspicion() {
+                        Suspicion::Measured(phi) => phi.value(),
+                        Suspicion::WarmingUp { silence, .. } => -silence_ns(silence),
+                        Suspicion::NoHeartbeat => panic!("a scan never lists NoHeartbeat"),
+                    };
+                    (suspect.peer(), suspect.incarnation(), level)
+                }));
                 assert!(scan.next().is_none_or(|next| next > position));
                 cursor = scan.next();
             }
             found.sort_by_key(|entry| entry.0);
-            let mut expected_suspects: Vec<(u64, u64, f64)> = model
-                .iter()
-                .filter_map(|(peer, incarnation, model)| {
-                    let Expected::Phi(phi) = model.phi(&config, probe) else {
-                        return None;
-                    };
-                    // Leave a margin so rounding cannot flip membership.
-                    assert!(!close(phi, limit.value(), 1e-7), "ambiguous threshold");
-                    (phi >= limit.value()).then_some((*peer, *incarnation, phi))
-                })
-                .collect();
+            let mut expected_suspects = expected_suspects(&model, &config, limit, probe);
             expected_suspects.sort_by_key(|entry| entry.0);
             assert_eq!(found.len(), expected_suspects.len());
             for (actual, expected) in found.iter().zip(&expected_suspects) {
                 assert_eq!((actual.0, actual.1), (expected.0, expected.1));
                 assert!(close(actual.2, expected.2, 1e-8));
                 listed += 1;
+                if actual.2 < 0.0 {
+                    silent += 1;
+                }
             }
         }
     }
     assert!(listed > 500, "only {listed} suspects compared");
+    assert!(silent > 50, "only {silent} warm-up suspects compared");
 }

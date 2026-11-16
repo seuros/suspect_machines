@@ -24,6 +24,9 @@ Everything the detector assumes is stated by the caller:
   current silence, never a phi computed from too little data.
 - **Acceptable pause.** `with_acceptable_pause` tolerates a fixed extra
   silence before suspicion starts to accrue.
+- **Warm-up ceiling.** `with_warm_up_ceiling` lets `Roster::scan` list a peer
+  still warming up once its silence exceeds the ceiling, so a peer that beat
+  once and died is still named. Without one, a warm-up peer is never listed.
 
 Time is explicit: the caller passes a monotonic `Duration` to every call. A
 heartbeat earlier than the previous one is `Refusal::TimeRegression`, an equal
@@ -32,8 +35,8 @@ one is `Refusal::SameInstant`, a time beyond `u64` nanoseconds is
 oldest interval; a full roster answers `Refusal::Full` and never evicts a peer.
 A heartbeat with an older incarnation is `Refusal::Stale`; a newer one discards
 the peer's statistics and starts a new warm-up. `Roster::scan` writes peers at
-or above a threshold into a caller buffer and returns a cursor when it runs out
-of room; a peer whose last heartbeat is later than the scan instant has no
+or above a threshold (and warm-up peers past the ceiling) into a caller
+buffer and returns a cursor when it runs out of room; a peer whose last heartbeat is later than the scan instant has no
 silence to measure and is skipped, not refused (`Roster::suspicion` refuses it
 with `TimeRegression`). `Roster::forget` never refuses: it answers `Forgetting::Forgotten`, or
 `Forgetting::NotTracked` for the idempotent repeat that changed nothing.
@@ -46,7 +49,8 @@ above zero),
 `Suspicion::warming_up::<W>` (`samples < required <= W`),
 `Statistics::new::<W>` (`1..=W` samples, `1 ns <= min <= max` with one
 sample its own min and max, a mean within `min..=max`, a positively signed
-deviation of at most `(max - min) / 2`), `Suspect::new` (any peer and incarnation)
+deviation of at most `(max - min) / 2`), `Suspect::new` (any peer and
+incarnation, a `Measured` or an unfinished `WarmingUp` suspicion)
 and `Scan::new::<P>` (at most `P` suspects, a resume cursor below `P`). Each
 answers `None` (or the `ConfigError`) for anything else.
 
@@ -56,7 +60,8 @@ honoured repeat. `suspicion` and `scan` take `&self` and record nothing.
 
 The Ruby gem passes and answers every `Duration` as Integer nanoseconds and
 mirrors `Phi`, `Threshold`, `Normal`, `Config`, `Beat::Recorded`,
-`Suspicion::WarmingUp`, `Suspicion::Measured`, `Statistics`, `Suspect` and
+`Suspicion::WarmingUp`, `Suspicion::Measured`, `Statistics`, `Suspect` (its
+`suspicion` a `Measured` or a `WarmingUp`) and
 `Scan` as `Data` values with the same fields (its `Scan#suspects` holds the
 suspects themselves where `Scan::suspects` counts those written to `out`),
 each checked through the constructors above

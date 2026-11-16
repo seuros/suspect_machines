@@ -171,6 +171,10 @@ fn configuration_refusals_are_explicit() {
             exponential(1).with_acceptable_pause(Duration::MAX),
             ConfigError::DurationOverflow,
         ),
+        (
+            exponential(1).with_warm_up_ceiling(Duration::MAX),
+            ConfigError::DurationOverflow,
+        ),
     ] {
         assert_eq!(refused, Err(error));
     }
@@ -281,8 +285,10 @@ fn detector_matches_naive_model_on_random_schedules() {
             let probe = (now + rng.below(4 * SECOND)).saturating_sub(rng.below(SECOND));
             match (detector.suspicion(at(probe)), model.phi(&config, probe)) {
                 (Err(Refusal::TimeRegression), Expected::Refused)
-                | (Ok(Suspicion::NoHeartbeat | Suspicion::WarmingUp { .. }), Expected::Undefined) =>
-                    {}
+                | (Ok(Suspicion::NoHeartbeat), Expected::Undefined) => {}
+                (Ok(Suspicion::WarmingUp { silence, .. }), Expected::WarmingUp(expected)) => {
+                    assert_eq!(silence, at(expected));
+                }
                 (Ok(Suspicion::Measured(phi)), Expected::Phi(expected)) => {
                     assert!(
                         close(phi.value(), expected, 1e-8),
