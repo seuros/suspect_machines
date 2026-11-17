@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/seuros/suspect_machines/compare/suspect-machines-v0.6.0...suspect-machines-v0.7.0) (2026-11-17)
+
+
+### Features
+
+* const Roster::new and displayable ConfigError ([aa41995](https://github.com/seuros/suspect_machines/commit/aa41995b34dcbc63719e630324f4f41f9e145e89))
+
 ## [0.6.0](https://github.com/seuros/suspect_machines/compare/suspect-machines-v0.5.1...suspect-machines-v0.6.0) (2026-11-16)
 
 
