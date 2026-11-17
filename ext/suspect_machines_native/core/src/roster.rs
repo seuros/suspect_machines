@@ -143,18 +143,22 @@ impl<const P: usize, const W: usize> Roster<P, W> {
     /// Intervals kept per peer.
     pub const WINDOW: usize = W;
 
-    /// An empty roster.
+    /// An empty roster. `const`, so a roster built from constant policy can
+    /// be checked at compile time.
     ///
     /// # Errors
     ///
     /// [`ConfigError::ZeroWindow`] when `W` is zero and
     /// [`ConfigError::WarmUpExceedsWindow`] when the warm-up could never
     /// finish.
-    pub fn new(config: Config) -> Result<Self, ConfigError> {
-        Ok(Self {
-            config: config.fit(W)?,
-            slots: core::array::from_fn(|_| None),
-        })
+    pub const fn new(config: Config) -> Result<Self, ConfigError> {
+        match config.fit(W) {
+            Ok(config) => Ok(Self {
+                config,
+                slots: [const { None }; P],
+            }),
+            Err(error) => Err(error),
+        }
     }
 
     fn find(&self, peer: u64) -> Option<&Slot<W>> {

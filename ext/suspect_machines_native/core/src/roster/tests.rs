@@ -338,3 +338,26 @@ fn roster_matches_naive_model_on_random_schedules() {
     assert!(listed > 500, "only {listed} suspects compared");
     assert!(silent > 50, "only {silent} warm-up suspects compared");
 }
+
+#[test]
+fn a_roster_of_constant_policy_is_built_at_compile_time() {
+    const ROSTER: Roster<3, 4> = match Config::new(crate::Distribution::Exponential, 2) {
+        Ok(config) => match Roster::new(config) {
+            Ok(roster) => roster,
+            Err(_) => panic!("a warm-up of 2 fits a window of 4"),
+        },
+        Err(_) => panic!("a warm-up of 2 is not zero"),
+    };
+    const REFUSED: Option<ConfigError> = match Config::new(crate::Distribution::Exponential, 5) {
+        Ok(config) => match Roster::<3, 4>::new(config) {
+            Ok(_) => None,
+            Err(error) => Some(error),
+        },
+        Err(error) => Some(error),
+    };
+    let mut roster = ROSTER;
+    assert!(roster.is_empty());
+    assert_eq!(roster.config(), exponential(2));
+    assert_eq!(roster.heartbeat(7, 0, at(10)), Ok(Beat::First));
+    assert_eq!(REFUSED, Some(ConfigError::WarmUpExceedsWindow));
+}

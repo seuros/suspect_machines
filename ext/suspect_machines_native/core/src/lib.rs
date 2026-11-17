@@ -75,6 +75,20 @@ pub enum ConfigError {
     WarmUpExceedsWindow,
 }
 
+impl core::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            Self::ZeroWarmUp => "the warm-up needs at least one interval",
+            Self::ZeroDeviationFloor => "the deviation floor must be non-zero",
+            Self::DurationOverflow => "a duration does not fit in 64-bit nanoseconds",
+            Self::ZeroWindow => "the interval window has no slots",
+            Self::WarmUpExceedsWindow => "the warm-up needs more intervals than the window holds",
+        })
+    }
+}
+
+impl core::error::Error for ConfigError {}
+
 /// Validated detector policy: distribution, warm-up, acceptable pause and
 /// warm-up ceiling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

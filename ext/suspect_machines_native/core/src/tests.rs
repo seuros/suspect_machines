@@ -303,3 +303,28 @@ fn detector_matches_naive_model_on_random_schedules() {
     }
     assert!(compared > 1_000, "only {compared} phi comparisons");
 }
+
+#[test]
+fn every_error_has_its_own_message() {
+    use std::{string::ToString, vec::Vec};
+    let messages: Vec<_> = [
+        &Refusal::TimeRegression as &dyn core::error::Error,
+        &Refusal::SameInstant,
+        &Refusal::Overflow,
+        &Refusal::Stale,
+        &Refusal::Full,
+        &Refusal::Untracked,
+        &ConfigError::ZeroWarmUp,
+        &ConfigError::ZeroDeviationFloor,
+        &ConfigError::DurationOverflow,
+        &ConfigError::ZeroWindow,
+        &ConfigError::WarmUpExceedsWindow,
+    ]
+    .iter()
+    .map(ToString::to_string)
+    .collect();
+    for (i, message) in messages.iter().enumerate() {
+        assert_ne!(message, "");
+        assert!(!messages[i + 1..].contains(message), "{message}");
+    }
+}
